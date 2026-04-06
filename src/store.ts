@@ -28,6 +28,7 @@ export class Store<T = Record<string, unknown>> {
     version: 1,
     migrate: (r) => r as T,
   };
+  private archivedRecordCount = 0;
   private batching = false;
   private batchOps: Operation<T>[] = [];
 
@@ -66,6 +67,7 @@ export class Store<T = Record<string, unknown>> {
       this.activeOpsPath = manifest.activeOps;
       this.created = manifest.stats.created;
       this.archiveSegments = manifest.archiveSegments;
+      this.archivedRecordCount = manifest.stats?.archivedRecords ?? 0;
 
       // Migrate if needed
       if (storedVersion < this.options.version) {
@@ -192,7 +194,11 @@ export class Store<T = Record<string, unknown>> {
     } catch (err) {
       // Rollback in-memory changes on failure
       for (const op of this.batchOps.reverse()) {
-        this.reverseOp(op);
+        try {
+          this.reverseOp(op);
+        } catch (rollbackErr) {
+          console.error("opslog: rollback failed for op", op.id, rollbackErr);
+        }
       }
       throw err;
     } finally {
@@ -239,7 +245,7 @@ export class Store<T = Record<string, unknown>> {
       archiveSegments: this.archiveSegments,
       stats: {
         activeRecords: this.records.size,
-        archivedRecords: 0,
+        archivedRecords: this.archivedRecordCount,
         opsCount: 0,
         created: this.created,
         lastCheckpoint: new Date().toISOString(),
@@ -270,6 +276,7 @@ export class Store<T = Record<string, unknown>> {
     for (const id of toArchive.keys()) {
       this.records.delete(id);
     }
+    this.archivedRecordCount += toArchive.size;
 
     await this.compact();
     return toArchive.size;

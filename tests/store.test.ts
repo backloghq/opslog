@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../src/store.js";
@@ -327,6 +327,131 @@ describe("Store", () => {
       const archived = await store2.loadArchive("2026-Q1");
       expect(archived.get("a")?.name).toBe("A");
       await store2.close();
+    });
+  });
+
+  describe("corruption recovery", () => {
+    it("skips malformed ops lines on open", async () => {
+      // Create a valid store first
+      await store.open(tmpDir, { checkpointOnClose: false, checkpointThreshold: 1000 });
+      await store.set("a", { name: "A", status: "active" });
+      // Read manifest to find active ops file
+      const manifest = JSON.parse(await readFile(join(tmpDir, "manifest.json"), "utf-8"));
+      const opsPath = join(tmpDir, manifest.activeOps);
+
+      // Append malformed lines
+      await writeFile(opsPath, await readFile(opsPath, "utf-8") + "not-json\n{}\n", "utf-8");
+
+      // Reopen — should recover valid ops and skip bad ones
+      const store2 = new Store<TestRecord>();
+      await store2.open(tmpDir);
+      expect(store2.get("a")?.name).toBe("A");
+      expect(store2.count()).toBe(1);
+      await store2.close();
+    });
+  });
+
+  describe("batch I/O failure", () => {
+    it("rolls back in-memory state when disk write fails", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+      await store.set("existing", { name: "Existing", status: "active" });
+
+      // Make ops file read-only to force appendOps failure
+      const manifest = JSON.parse(await readFile(join(tmpDir, "manifest.json"), "utf-8"));
+      const opsPath = join(tmpDir, manifest.activeOps);
+      await chmod(opsPath, 0o444);
+
+      await expect(
+        store.batch(() => {
+          store.set("new1", { name: "New1", status: "active" });
+          store.set("new2", { name: "New2", status: "active" });
+        }),
+      ).rejects.toThrow();
+
+      // In-memory state should be rolled back
+      expect(store.has("new1")).toBe(false);
+      expect(store.has("new2")).toBe(false);
+      // Existing data preserved
+      expect(store.has("existing")).toBe(true);
+
+      // Restore permissions
+      await chmod(opsPath, 0o644);
+    });
+
+    it("store remains usable after failed batch", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+
+      const manifest = JSON.parse(await readFile(join(tmpDir, "manifest.json"), "utf-8"));
+      const opsPath = join(tmpDir, manifest.activeOps);
+      await chmod(opsPath, 0o444);
+
+      await expect(
+        store.batch(() => {
+          store.set("x", { name: "X", status: "active" });
+        }),
+      ).rejects.toThrow();
+
+      // Restore permissions and verify store works
+      await chmod(opsPath, 0o644);
+      await store.set("y", { name: "Y", status: "active" });
+      expect(store.get("y")?.name).toBe("Y");
+    });
+  });
+
+  describe("archive merge", () => {
+    it("merges records when archiving to same period twice", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+      await store.set("a", { name: "A", status: "done" });
+      await store.set("b", { name: "B", status: "done" });
+      await store.set("c", { name: "C", status: "active" });
+
+      // First archive
+      await store.archive((r) => r.name === "A", "2026-Q1");
+      // Second archive to same period
+      await store.archive((r) => r.name === "B", "2026-Q1");
+
+      // Both records should be in the archive
+      const archived = await store.loadArchive("2026-Q1");
+      expect(archived.size).toBe(2);
+      expect(archived.get("a")?.name).toBe("A");
+      expect(archived.get("b")?.name).toBe("B");
+
+      // Only active record remains
+      expect(store.count()).toBe(1);
+      expect(store.has("c")).toBe(true);
+    });
+
+    it("tracks archivedRecords count in manifest", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+      await store.set("a", { name: "A", status: "done" });
+      await store.set("b", { name: "B", status: "done" });
+      await store.archive(() => true, "2026-Q1");
+      await store.close();
+
+      const manifest = JSON.parse(await readFile(join(tmpDir, "manifest.json"), "utf-8"));
+      expect(manifest.stats.archivedRecords).toBe(2);
+    });
+
+    it("persists archivedRecords count across reopen", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+      await store.set("a", { name: "A", status: "done" });
+      await store.archive(() => true, "2026-Q1");
+      await store.close();
+
+      const store2 = new Store<TestRecord>();
+      await store2.open(tmpDir, { checkpointThreshold: 1000 });
+      await store2.set("b", { name: "B", status: "done" });
+      await store2.archive(() => true, "2026-Q1");
+      await store2.close();
+
+      const manifest = JSON.parse(await readFile(join(tmpDir, "manifest.json"), "utf-8"));
+      expect(manifest.stats.archivedRecords).toBe(2);
+
+      const store3 = new Store<TestRecord>();
+      await store3.open(tmpDir);
+      const archived = await store3.loadArchive("2026-Q1");
+      expect(archived.size).toBe(2);
+      await store3.close();
     });
   });
 
