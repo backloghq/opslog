@@ -1,6 +1,7 @@
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Snapshot } from "./types.js";
+import { validateSnapshot } from "./validate.js";
 
 export async function writeSnapshot<T>(
   dir: string,
@@ -27,7 +28,7 @@ export async function loadSnapshot<T>(
 ): Promise<{ records: Map<string, T>; version: number }> {
   const path = join(dir, relativePath);
   const content = await readFile(path, "utf-8");
-  const snapshot = JSON.parse(content) as Snapshot<T>;
+  const snapshot = validateSnapshot<T>(JSON.parse(content));
   const records = new Map(Object.entries(snapshot.records));
   return { records, version: snapshot.version };
 }

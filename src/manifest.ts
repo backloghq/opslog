@@ -1,13 +1,14 @@
 import { readFile, rename, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { Manifest } from "./types.js";
+import { validateManifest } from "./validate.js";
 
 const MANIFEST_FILE = "manifest.json";
 
 export async function readManifest(dir: string): Promise<Manifest | null> {
   try {
     const content = await readFile(join(dir, MANIFEST_FILE), "utf-8");
-    return JSON.parse(content) as Manifest;
+    return validateManifest(JSON.parse(content));
   } catch {
     return null;
   }

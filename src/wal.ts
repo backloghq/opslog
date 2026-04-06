@@ -1,5 +1,6 @@
 import { appendFile, readFile, writeFile } from "node:fs/promises";
 import type { Operation } from "./types.js";
+import { validateOp } from "./validate.js";
 
 export async function appendOp<T>(path: string, op: Operation<T>): Promise<void> {
   await appendFile(path, JSON.stringify(op) + "\n", "utf-8");
@@ -19,12 +20,16 @@ export async function readOps<T>(path: string): Promise<Operation<T>[]> {
   }
   const lines = content.trim().split("\n").filter(Boolean);
   const ops: Operation<T>[] = [];
+  let skipped = 0;
   for (const line of lines) {
     try {
-      ops.push(JSON.parse(line) as Operation<T>);
+      ops.push(validateOp<T>(JSON.parse(line)));
     } catch {
-      // Skip malformed lines (crash recovery)
+      skipped++;
     }
+  }
+  if (skipped > 0) {
+    console.error(`opslog: skipped ${skipped} malformed line(s) in ${path}`);
   }
   return ops;
 }
