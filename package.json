@@ -1,0 +1,44 @@
+{
+  "name": "opslog",
+  "version": "0.1.0",
+  "description": "Embedded event-sourced document store. Append-only operation log with immutable snapshots, zero native dependencies.",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "lint": "eslint src/ tests/",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --coverage"
+  },
+  "keywords": [
+    "event-sourcing",
+    "append-only",
+    "wal",
+    "document-store",
+    "embedded",
+    "jsonl",
+    "snapshots"
+  ],
+  "author": "mbocevski",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
+  "devDependencies": {
+    "@eslint/js": "*",
+    "@types/node": "*",
+    "@vitest/coverage-v8": "^4.1.2",
+    "eslint": "*",
+    "typescript": "*",
+    "typescript-eslint": "*",
+    "vitest": "*"
+  }
+}
