@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.2 (2026-04-07)
+
+### Fixed
+- **Manifest validation** — `validateManifest()` now checks `archiveSegments` is an array and `stats` contains all required fields (`activeRecords`, `archivedRecords`, `opsCount`, `created`, `lastCheckpoint`). Malformed manifests throw descriptive errors instead of being treated as fresh stores.
+- **Archive segment validation** — `validateArchiveSegment()` now checks `timestamp` field
+- **Archive merge error handling** — distinguishes file-not-found (first write) from corrupted archive files; corruption now throws instead of silently overwriting
+- **readManifest** — file-not-found returns null (fresh store), but validation errors now propagate
+
+### Changed
+- CLAUDE.md updated: fixed test file references, corrected `filter()` signature, added release process docs
+
 ## 0.1.1 (2026-04-07)
 
 ### Fixed

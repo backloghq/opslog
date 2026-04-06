@@ -67,7 +67,7 @@ export class Store<T = Record<string, unknown>> {
       this.activeOpsPath = manifest.activeOps;
       this.created = manifest.stats.created;
       this.archiveSegments = manifest.archiveSegments;
-      this.archivedRecordCount = manifest.stats?.archivedRecords ?? 0;
+      this.archivedRecordCount = manifest.stats.archivedRecords;
 
       // Migrate if needed
       if (storedVersion < this.options.version) {

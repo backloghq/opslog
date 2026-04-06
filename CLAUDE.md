@@ -45,11 +45,8 @@ src/
   store.ts             # Public API: open, get, set, delete, query, undo, compact
   index.ts             # Exports
 tests/
-  wal.test.ts
-  snapshot.test.ts
-  store.test.ts
-  archive.test.ts
-  crash.test.ts        # Crash safety scenarios
+  wal.test.ts           # WAL append/read/truncate tests
+  store.test.ts         # All store operations, batch, undo, archive, corruption recovery
 ```
 
 ## Public API
@@ -67,7 +64,7 @@ interface Store<T> {
 
   // Query
   all(): T[];
-  filter(predicate: (item: T) => boolean): T[];
+  filter(predicate: (value: T, id: string) => boolean): T[];
   count(predicate?: (item: T) => boolean): number;
 
   // Batch
@@ -93,3 +90,12 @@ interface Store<T> {
 - All async operations return Promises
 - Comprehensive error handling — never corrupt data on error
 - Tests use temp directories, cleaned up after each test
+
+## Release Process
+
+When making changes:
+1. Update `CHANGELOG.md` with a new version entry (Fixed/Added/Changed sections, [Keep a Changelog](https://keepachangelog.com) format)
+2. Bump version in `package.json`
+3. Run `npm run build && npm run lint && npm test`
+4. Commit, push, create PR
+5. After merge: `npm publish --access public`

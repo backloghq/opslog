@@ -6,12 +6,13 @@ import { validateManifest } from "./validate.js";
 const MANIFEST_FILE = "manifest.json";
 
 export async function readManifest(dir: string): Promise<Manifest | null> {
+  let content: string;
   try {
-    const content = await readFile(join(dir, MANIFEST_FILE), "utf-8");
-    return validateManifest(JSON.parse(content));
+    content = await readFile(join(dir, MANIFEST_FILE), "utf-8");
   } catch {
-    return null;
+    return null; // File not found — fresh store
   }
+  return validateManifest(JSON.parse(content));
 }
 
 export async function writeManifest(dir: string, manifest: Manifest): Promise<void> {
