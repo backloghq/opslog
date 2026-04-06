@@ -20,6 +20,8 @@ export class Store<T = Record<string, unknown>> {
   private archiveSegments: string[] = [];
   private opened = false;
   private version = 1;
+  private activeOpsPath = "";
+  private created = "";
   private options: Required<StoreOptions> = {
     checkpointThreshold: 100,
     checkpointOnClose: true,
@@ -50,6 +52,8 @@ export class Store<T = Record<string, unknown>> {
       const newManifest = createDefaultManifest(snapshotPath, opsPath);
       await writeManifest(dir, newManifest);
       this.version = this.options.version;
+      this.activeOpsPath = opsPath;
+      this.created = newManifest.stats.created;
       this.archiveSegments = [];
     } else {
       // Load existing state
@@ -59,6 +63,8 @@ export class Store<T = Record<string, unknown>> {
       );
       this.records = records;
       this.version = storedVersion;
+      this.activeOpsPath = manifest.activeOps;
+      this.created = manifest.stats.created;
       this.archiveSegments = manifest.archiveSegments;
 
       // Migrate if needed
@@ -177,11 +183,11 @@ export class Store<T = Record<string, unknown>> {
     try {
       fn();
       if (this.batchOps.length > 0) {
-        const manifest = await readManifest(this.dir);
-        if (!manifest) throw new Error("Store corrupted: manifest missing");
-        await appendOps(join(this.dir, manifest.activeOps), this.batchOps);
+        await appendOps(join(this.dir, this.activeOpsPath), this.batchOps);
         this.ops.push(...this.batchOps);
-        await this.maybeCheckpoint(manifest);
+        if (this.ops.length >= this.options.checkpointThreshold) {
+          await this.compact();
+        }
       }
     } catch (err) {
       // Rollback in-memory changes on failure
@@ -203,9 +209,7 @@ export class Store<T = Record<string, unknown>> {
     this.reverseOp(lastOp);
     this.ops.pop();
 
-    const manifest = await readManifest(this.dir);
-    if (!manifest) throw new Error("Store corrupted: manifest missing");
-    await truncateLastOp(join(this.dir, manifest.activeOps));
+    await truncateLastOp(join(this.dir, this.activeOpsPath));
 
     return true;
   }
@@ -228,7 +232,6 @@ export class Store<T = Record<string, unknown>> {
     const opsPath = `ops/${opsFilename}`;
     await writeFile(join(this.dir, opsPath), "", "utf-8");
 
-    const manifest = await readManifest(this.dir);
     const updatedManifest = {
       version: this.version,
       currentSnapshot: snapshotPath,
@@ -236,13 +239,14 @@ export class Store<T = Record<string, unknown>> {
       archiveSegments: this.archiveSegments,
       stats: {
         activeRecords: this.records.size,
-        archivedRecords: manifest?.stats.archivedRecords ?? 0,
+        archivedRecords: 0,
         opsCount: 0,
-        created: manifest?.stats.created ?? new Date().toISOString(),
+        created: this.created,
         lastCheckpoint: new Date().toISOString(),
       },
     };
     await writeManifest(this.dir, updatedManifest);
+    this.activeOpsPath = opsPath;
     this.ops = [];
   }
 
@@ -318,18 +322,9 @@ export class Store<T = Record<string, unknown>> {
   }
 
   private async persistOp(op: Operation<T>): Promise<void> {
-    const manifest = await readManifest(this.dir);
-    if (!manifest) throw new Error("Store corrupted: manifest missing");
-    await appendOp(join(this.dir, manifest.activeOps), op);
+    await appendOp(join(this.dir, this.activeOpsPath), op);
     this.ops.push(op);
-    await this.maybeCheckpoint(manifest);
-  }
-
-  private async maybeCheckpoint(
-    manifest: { stats: { opsCount: number } },
-  ): Promise<void> {
-    const totalOps = manifest.stats.opsCount + this.ops.length;
-    if (totalOps >= this.options.checkpointThreshold) {
+    if (this.ops.length >= this.options.checkpointThreshold) {
       await this.compact();
     }
   }
