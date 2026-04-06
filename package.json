@@ -1,5 +1,5 @@
 {
-  "name": "opslog",
+  "name": "@backloghq/opslog",
   "version": "0.1.0",
   "description": "Embedded event-sourced document store. Append-only operation log with immutable snapshots, zero native dependencies.",
   "main": "dist/index.js",
