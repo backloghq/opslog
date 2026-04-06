@@ -7,13 +7,13 @@ Every mutation is recorded as an operation in an append-only log. Current state 
 ## Install
 
 ```bash
-npm install opslog
+npm install @backloghq/opslog
 ```
 
 ## Usage
 
 ```typescript
-import { Store } from "opslog";
+import { Store } from "@backloghq/opslog";
 
 const store = new Store<{ name: string; status: string }>();
 await store.open("./data");
