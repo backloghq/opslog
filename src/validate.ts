@@ -21,6 +21,16 @@ export function validateManifest(raw: unknown): Manifest {
   if (typeof obj.version !== "number") throw new Error("Invalid manifest: missing version");
   if (typeof obj.currentSnapshot !== "string") throw new Error("Invalid manifest: missing currentSnapshot");
   if (typeof obj.activeOps !== "string") throw new Error("Invalid manifest: missing activeOps");
+  if (!Array.isArray(obj.archiveSegments)) throw new Error("Invalid manifest: archiveSegments must be an array");
+  if (typeof obj.stats !== "object" || obj.stats === null || Array.isArray(obj.stats)) {
+    throw new Error("Invalid manifest: missing stats");
+  }
+  const stats = obj.stats as Record<string, unknown>;
+  if (typeof stats.activeRecords !== "number") throw new Error("Invalid manifest: stats.activeRecords must be a number");
+  if (typeof stats.archivedRecords !== "number") throw new Error("Invalid manifest: stats.archivedRecords must be a number");
+  if (typeof stats.opsCount !== "number") throw new Error("Invalid manifest: stats.opsCount must be a number");
+  if (typeof stats.created !== "string") throw new Error("Invalid manifest: stats.created must be a string");
+  if (typeof stats.lastCheckpoint !== "string") throw new Error("Invalid manifest: stats.lastCheckpoint must be a string");
   return raw as Manifest;
 }
 
@@ -43,6 +53,7 @@ export function validateArchiveSegment<T>(raw: unknown): ArchiveSegment<T> {
   const obj = raw as Record<string, unknown>;
   if (typeof obj.version !== "number") throw new Error("Invalid archive segment: missing version");
   if (typeof obj.period !== "string") throw new Error("Invalid archive segment: missing period");
+  if (typeof obj.timestamp !== "string") throw new Error("Invalid archive segment: missing timestamp");
   if (typeof obj.records !== "object" || obj.records === null || Array.isArray(obj.records)) {
     throw new Error("Invalid archive segment: records must be an object");
   }

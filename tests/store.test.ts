@@ -330,6 +330,77 @@ describe("Store", () => {
     });
   });
 
+  describe("manifest validation", () => {
+    it("throws on manifest missing archiveSegments", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+      await store.set("a", { name: "A", status: "active" });
+      await store.close();
+
+      const manifest = JSON.parse(await readFile(join(tmpDir, "manifest.json"), "utf-8"));
+      delete manifest.archiveSegments;
+      await writeFile(join(tmpDir, "manifest.json"), JSON.stringify(manifest), "utf-8");
+
+      const store2 = new Store<TestRecord>();
+      await expect(store2.open(tmpDir)).rejects.toThrow("archiveSegments must be an array");
+    });
+
+    it("throws on manifest missing stats", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+      await store.set("a", { name: "A", status: "active" });
+      await store.close();
+
+      const manifest = JSON.parse(await readFile(join(tmpDir, "manifest.json"), "utf-8"));
+      delete manifest.stats;
+      await writeFile(join(tmpDir, "manifest.json"), JSON.stringify(manifest), "utf-8");
+
+      const store2 = new Store<TestRecord>();
+      await expect(store2.open(tmpDir)).rejects.toThrow("missing stats");
+    });
+
+    it("throws on manifest with incomplete stats", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+      await store.set("a", { name: "A", status: "active" });
+      await store.close();
+
+      const manifest = JSON.parse(await readFile(join(tmpDir, "manifest.json"), "utf-8"));
+      manifest.stats = { activeRecords: 1 };
+      await writeFile(join(tmpDir, "manifest.json"), JSON.stringify(manifest), "utf-8");
+
+      const store2 = new Store<TestRecord>();
+      await expect(store2.open(tmpDir)).rejects.toThrow("stats.archivedRecords must be a number");
+    });
+  });
+
+  describe("archive validation", () => {
+    it("throws on loading archive segment missing timestamp", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+      await store.set("a", { name: "A", status: "done" });
+      await store.archive(() => true, "2026-Q1");
+
+      // Corrupt the archive file — remove timestamp
+      const archivePath = join(tmpDir, "archive", "archive-2026-Q1.json");
+      const content = JSON.parse(await readFile(archivePath, "utf-8"));
+      delete content.timestamp;
+      await writeFile(archivePath, JSON.stringify(content), "utf-8");
+
+      await expect(store.loadArchive("2026-Q1")).rejects.toThrow("missing timestamp");
+    });
+
+    it("throws on archive merge with corrupted existing file", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+      await store.set("a", { name: "A", status: "done" });
+      await store.archive(() => true, "2026-Q1");
+
+      // Corrupt the archive file
+      const archivePath = join(tmpDir, "archive", "archive-2026-Q1.json");
+      await writeFile(archivePath, "not valid json{{{", "utf-8");
+
+      // Second archive to same period should throw, not silently overwrite
+      await store.set("b", { name: "B", status: "done" });
+      await expect(store.archive(() => true, "2026-Q1")).rejects.toThrow();
+    });
+  });
+
   describe("corruption recovery", () => {
     it("skips malformed ops lines on open", async () => {
       // Create a valid store first

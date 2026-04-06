@@ -16,8 +16,9 @@ export async function writeArchiveSegment<T>(
     const content = await readFile(path, "utf-8");
     const parsed = validateArchiveSegment<T>(JSON.parse(content));
     existing = parsed.records;
-  } catch {
-    // First write to this period
+  } catch (err: unknown) {
+    const isNotFound = err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT";
+    if (!isNotFound) throw err;
   }
   const merged = { ...existing, ...Object.fromEntries(records) };
   const segment: ArchiveSegment<T> = {
