@@ -58,26 +58,30 @@ interface Store<T> {
 
   // CRUD
   get(id: string): T | undefined;
-  set(id: string, value: T): Promise<void>;
-  delete(id: string): Promise<void>;
+  set(id: string, value: T): Promise<void> | void;  // sync inside batch()
+  delete(id: string): Promise<void> | void;          // sync inside batch()
   has(id: string): boolean;
 
   // Query
   all(): T[];
+  entries(): [string, T][];
   filter(predicate: (value: T, id: string) => boolean): T[];
-  count(predicate?: (item: T) => boolean): number;
+  count(predicate?: (value: T, id: string) => boolean): number;
 
-  // Batch
+  // Batch — empty batches are no-ops (no I/O)
   batch(fn: () => void): Promise<void>;
 
   // History
   undo(): Promise<boolean>;
   getHistory(id: string): Operation<T>[];
+  getOps(since?: string): Operation<T>[];
 
   // Maintenance
   compact(): Promise<void>;
-  archive(predicate: (item: T) => boolean): Promise<number>;
-  loadArchive(segment?: string): Promise<T[]>;
+  archive(predicate: (value: T, id: string) => boolean, segment?: string): Promise<number>;
+  loadArchive(segment: string): Promise<Map<string, T>>;
+  listArchiveSegments(): string[];
+  stats(): StoreStats;
 }
 ```
 

@@ -58,10 +58,17 @@ export class Store<T = Record<string, unknown>> {
       this.archiveSegments = [];
     } else {
       // Load existing state
-      const { records, version: storedVersion } = await loadSnapshot<T>(
-        dir,
-        manifest.currentSnapshot,
-      );
+      let snapshotData: { records: Map<string, T>; version: number };
+      try {
+        snapshotData = await loadSnapshot<T>(dir, manifest.currentSnapshot);
+      } catch (err) {
+        const isNotFound = err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT";
+        if (isNotFound) {
+          throw new Error(`Snapshot file not found: ${manifest.currentSnapshot}. The data directory may be corrupted.`, { cause: err });
+        }
+        throw err;
+      }
+      const { records, version: storedVersion } = snapshotData;
       this.records = records;
       this.version = storedVersion;
       this.activeOpsPath = manifest.activeOps;
@@ -184,6 +191,7 @@ export class Store<T = Record<string, unknown>> {
     this.batchOps = [];
     try {
       fn();
+      // Empty batches are no-ops — no I/O if fn() didn't call set/delete
       if (this.batchOps.length > 0) {
         await appendOps(join(this.dir, this.activeOpsPath), this.batchOps);
         this.ops.push(...this.batchOps);

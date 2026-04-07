@@ -369,6 +369,64 @@ describe("Store", () => {
       const store2 = new Store<TestRecord>();
       await expect(store2.open(tmpDir)).rejects.toThrow("stats.archivedRecords must be a number");
     });
+
+    it("throws on manifest with invalid version", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+      await store.set("a", { name: "A", status: "active" });
+      await store.close();
+
+      const manifest = JSON.parse(await readFile(join(tmpDir, "manifest.json"), "utf-8"));
+      manifest.version = -1;
+      await writeFile(join(tmpDir, "manifest.json"), JSON.stringify(manifest), "utf-8");
+
+      const store2 = new Store<TestRecord>();
+      await expect(store2.open(tmpDir)).rejects.toThrow("version must be a positive integer");
+    });
+
+    it("throws when snapshot file is missing", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+      await store.set("a", { name: "A", status: "active" });
+      await store.close();
+
+      const manifest = JSON.parse(await readFile(join(tmpDir, "manifest.json"), "utf-8"));
+      const snapshotPath = join(tmpDir, manifest.currentSnapshot);
+      await rm(snapshotPath);
+
+      const store2 = new Store<TestRecord>();
+      await expect(store2.open(tmpDir)).rejects.toThrow("Snapshot file not found");
+    });
+  });
+
+  describe("snapshot validation", () => {
+    it("throws on snapshot missing timestamp", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+      await store.set("a", { name: "A", status: "active" });
+      await store.close();
+
+      const manifest = JSON.parse(await readFile(join(tmpDir, "manifest.json"), "utf-8"));
+      const snapshotPath = join(tmpDir, manifest.currentSnapshot);
+      const snapshot = JSON.parse(await readFile(snapshotPath, "utf-8"));
+      delete snapshot.timestamp;
+      await writeFile(snapshotPath, JSON.stringify(snapshot), "utf-8");
+
+      const store2 = new Store<TestRecord>();
+      await expect(store2.open(tmpDir)).rejects.toThrow("missing timestamp");
+    });
+
+    it("throws on snapshot with invalid version", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+      await store.set("a", { name: "A", status: "active" });
+      await store.close();
+
+      const manifest = JSON.parse(await readFile(join(tmpDir, "manifest.json"), "utf-8"));
+      const snapshotPath = join(tmpDir, manifest.currentSnapshot);
+      const snapshot = JSON.parse(await readFile(snapshotPath, "utf-8"));
+      snapshot.version = 0;
+      await writeFile(snapshotPath, JSON.stringify(snapshot), "utf-8");
+
+      const store2 = new Store<TestRecord>();
+      await expect(store2.open(tmpDir)).rejects.toThrow("version must be a positive integer");
+    });
   });
 
   describe("archive validation", () => {

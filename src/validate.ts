@@ -18,7 +18,9 @@ export function validateManifest(raw: unknown): Manifest {
     throw new Error("Invalid manifest: not an object");
   }
   const obj = raw as Record<string, unknown>;
-  if (typeof obj.version !== "number") throw new Error("Invalid manifest: missing version");
+  if (typeof obj.version !== "number" || !Number.isInteger(obj.version) || obj.version < 1) {
+    throw new Error("Invalid manifest: version must be a positive integer");
+  }
   if (typeof obj.currentSnapshot !== "string") throw new Error("Invalid manifest: missing currentSnapshot");
   if (typeof obj.activeOps !== "string") throw new Error("Invalid manifest: missing activeOps");
   if (!Array.isArray(obj.archiveSegments)) throw new Error("Invalid manifest: archiveSegments must be an array");
@@ -39,7 +41,10 @@ export function validateSnapshot<T>(raw: unknown): Snapshot<T> {
     throw new Error("Invalid snapshot: not an object");
   }
   const obj = raw as Record<string, unknown>;
-  if (typeof obj.version !== "number") throw new Error("Invalid snapshot: missing version");
+  if (typeof obj.version !== "number" || !Number.isInteger(obj.version) || obj.version < 1) {
+    throw new Error("Invalid snapshot: version must be a positive integer");
+  }
+  if (typeof obj.timestamp !== "string") throw new Error("Invalid snapshot: missing timestamp");
   if (typeof obj.records !== "object" || obj.records === null || Array.isArray(obj.records)) {
     throw new Error("Invalid snapshot: records must be an object");
   }
@@ -51,7 +56,9 @@ export function validateArchiveSegment<T>(raw: unknown): ArchiveSegment<T> {
     throw new Error("Invalid archive segment: not an object");
   }
   const obj = raw as Record<string, unknown>;
-  if (typeof obj.version !== "number") throw new Error("Invalid archive segment: missing version");
+  if (typeof obj.version !== "number" || !Number.isInteger(obj.version) || obj.version < 1) {
+    throw new Error("Invalid archive segment: version must be a positive integer");
+  }
   if (typeof obj.period !== "string") throw new Error("Invalid archive segment: missing period");
   if (typeof obj.timestamp !== "string") throw new Error("Invalid archive segment: missing timestamp");
   if (typeof obj.records !== "object" || obj.records === null || Array.isArray(obj.records)) {
