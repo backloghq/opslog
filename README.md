@@ -103,6 +103,8 @@ await store.batch(() => {         // Multiple ops, single disk write
 });
 ```
 
+Empty batches (no `set`/`delete` calls) are no-ops — no I/O is performed.
+
 ### History
 
 ```typescript

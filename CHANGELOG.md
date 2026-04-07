@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.3 (2026-04-07)
+
+### Fixed
+- **Snapshot validation** — `validateSnapshot()` now checks `timestamp` field, consistent with archive segment validation
+- **Missing snapshot recovery** — `store.open()` now catches missing snapshot files and throws a descriptive error instead of a raw ENOENT
+- **Version range validation** — all validators now require version to be a positive integer; rejects 0, negative, fractional, NaN
+
+### Changed
+- CLAUDE.md API signatures updated to match implementation (`set`/`delete` return types, `filter`/`count`/`archive` predicate signatures, `loadArchive` return type, added missing methods)
+- README batch section documents empty batch no-op behavior
+
 ## 0.1.2 (2026-04-07)
 
 ### Fixed
