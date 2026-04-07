@@ -292,7 +292,7 @@ export class Store<T = Record<string, unknown>> {
 
   async loadArchive(segment: string): Promise<Map<string, T>> {
     this.ensureOpen();
-    const segmentPath = this.archiveSegments.find((s) => s.includes(segment));
+    const segmentPath = this.archiveSegments.find((s) => s === `archive/archive-${segment}.json`) || this.archiveSegments.find((s) => s.includes(segment));
     if (!segmentPath) throw new Error(`Archive segment '${segment}' not found`);
     return loadArchiveSegment(this.dir, segmentPath);
   }

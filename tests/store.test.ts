@@ -367,7 +367,7 @@ describe("Store", () => {
       await writeFile(join(tmpDir, "manifest.json"), JSON.stringify(manifest), "utf-8");
 
       const store2 = new Store<TestRecord>();
-      await expect(store2.open(tmpDir)).rejects.toThrow("stats.archivedRecords must be a number");
+      await expect(store2.open(tmpDir)).rejects.toThrow("stats.archivedRecords must be a non-negative integer");
     });
 
     it("throws on manifest with invalid version", async () => {
@@ -380,7 +380,7 @@ describe("Store", () => {
       await writeFile(join(tmpDir, "manifest.json"), JSON.stringify(manifest), "utf-8");
 
       const store2 = new Store<TestRecord>();
-      await expect(store2.open(tmpDir)).rejects.toThrow("version must be a positive integer");
+      await expect(store2.open(tmpDir)).rejects.toThrow("version must be a positive finite integer");
     });
 
     it("throws when snapshot file is missing", async () => {
@@ -410,7 +410,7 @@ describe("Store", () => {
       await writeFile(snapshotPath, JSON.stringify(snapshot), "utf-8");
 
       const store2 = new Store<TestRecord>();
-      await expect(store2.open(tmpDir)).rejects.toThrow("missing timestamp");
+      await expect(store2.open(tmpDir)).rejects.toThrow("timestamp must be a non-empty string");
     });
 
     it("throws on snapshot with invalid version", async () => {
@@ -425,7 +425,7 @@ describe("Store", () => {
       await writeFile(snapshotPath, JSON.stringify(snapshot), "utf-8");
 
       const store2 = new Store<TestRecord>();
-      await expect(store2.open(tmpDir)).rejects.toThrow("version must be a positive integer");
+      await expect(store2.open(tmpDir)).rejects.toThrow("version must be a positive finite integer");
     });
   });
 
@@ -441,7 +441,7 @@ describe("Store", () => {
       delete content.timestamp;
       await writeFile(archivePath, JSON.stringify(content), "utf-8");
 
-      await expect(store.loadArchive("2026-Q1")).rejects.toThrow("missing timestamp");
+      await expect(store.loadArchive("2026-Q1")).rejects.toThrow("timestamp must be a non-empty string");
     });
 
     it("throws on archive merge with corrupted existing file", async () => {
