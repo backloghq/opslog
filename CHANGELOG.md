@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.1.4 (2026-04-07)
+
+### Fixed
+- **Infinity/NaN in numeric validators** — all numeric fields now require `Number.isFinite()`; `Infinity` and `NaN` are rejected
+- **Operation validation** — `validateOp()` now requires `prev` field (object or null), `data` field on set ops (non-null), enforces delete semantics (non-null prev, no data), and type-checks `op` as string before comparison
+- **Empty string rejection** — all timestamp, period, path, and ID fields now reject empty strings
+- **Record count stats** — `activeRecords`, `archivedRecords`, `opsCount` now require non-negative integers
+- **Archive segment lookup** — `loadArchive()` prefers exact match before substring fallback, preventing ambiguous matches
+- **Manifest archiveSegments** — array entries validated as non-empty strings
+
 ## 0.1.3 (2026-04-07)
 
 ### Fixed
