@@ -150,6 +150,138 @@ describe("Group commit", () => {
     await store.close();
   });
 
+  // --- Async write mode tests ---
+
+  it("async mode: set() resolves before disk I/O", async () => {
+    const store = new Store<TestRecord>();
+    await store.open(tmpDir, {
+      writeMode: "async",
+      groupCommitSize: 1000,
+      groupCommitMs: 60000,
+      checkpointThreshold: 10000,
+    });
+
+    // set() should return nearly instantly — no awaiting disk
+    const start = performance.now();
+    for (let i = 0; i < 100; i++) {
+      await store.set(`k${i}`, { name: `V${i}`, status: "active" });
+    }
+    const elapsed = performance.now() - start;
+
+    // In-memory state should be updated
+    expect(store.get("k0")?.name).toBe("V0");
+    expect(store.get("k99")?.name).toBe("V99");
+    expect(store.count()).toBe(100);
+
+    // Should be fast — no disk I/O per op
+    expect(elapsed).toBeLessThan(50);
+
+    await store.close();
+  });
+
+  it("async mode: data survives after explicit sync()", async () => {
+    const store = new Store<TestRecord>();
+    await store.open(tmpDir, {
+      writeMode: "async",
+      groupCommitSize: 1000,
+      groupCommitMs: 60000,
+      checkpointThreshold: 10000,
+      checkpointOnClose: false,
+    });
+
+    await store.set("a", { name: "A", status: "active" });
+    await store.set("b", { name: "B", status: "active" });
+    await store.sync(); // Explicitly flush to disk
+    await store.close();
+
+    // Reopen and verify
+    const store2 = new Store<TestRecord>();
+    await store2.open(tmpDir, { checkpointThreshold: 10000 });
+    expect(store2.get("a")?.name).toBe("A");
+    expect(store2.get("b")?.name).toBe("B");
+    await store2.close();
+  });
+
+  it("async mode: close() flushes buffered data", async () => {
+    const store = new Store<TestRecord>();
+    await store.open(tmpDir, {
+      writeMode: "async",
+      groupCommitSize: 1000,
+      groupCommitMs: 60000,
+      checkpointThreshold: 10000,
+    });
+
+    await store.set("a", { name: "A", status: "active" });
+    await store.close(); // close should flush + checkpoint
+
+    const store2 = new Store<TestRecord>();
+    await store2.open(tmpDir, { checkpointThreshold: 10000 });
+    expect(store2.get("a")?.name).toBe("A");
+    await store2.close();
+  });
+
+  it("async mode: forced to immediate when agentId is set", async () => {
+    const store = new Store<TestRecord>();
+    await store.open(tmpDir, {
+      writeMode: "async",
+      agentId: "agent-1",
+      checkpointThreshold: 1000,
+    });
+
+    await store.set("a", { name: "A", status: "active" });
+
+    // Should be using immediate mode (agentId set) — data on disk
+    const manifest = JSON.parse(await readFile(join(tmpDir, "manifest.json"), "utf-8"));
+    const agentOps = manifest.activeAgentOps?.["agent-1"];
+    expect(agentOps).toBeDefined();
+
+    await store.close();
+  });
+
+  it("async mode: much faster than immediate for individual writes", async () => {
+    const N = 500;
+
+    // Immediate mode
+    const dirImm = join(tmpDir, "imm");
+    const storeImm = new Store<TestRecord>();
+    await storeImm.open(dirImm, { checkpointThreshold: 10000 });
+    const startImm = performance.now();
+    for (let i = 0; i < N; i++) {
+      await storeImm.set(`k${i}`, { name: `V${i}`, status: "active" });
+    }
+    const immMs = performance.now() - startImm;
+    await storeImm.close();
+
+    // Async mode
+    const dirAsync = join(tmpDir, "async");
+    const storeAsync = new Store<TestRecord>();
+    await storeAsync.open(dirAsync, {
+      writeMode: "async",
+      groupCommitSize: 50,
+      groupCommitMs: 10,
+      checkpointThreshold: 10000,
+    });
+    const startAsync = performance.now();
+    for (let i = 0; i < N; i++) {
+      await storeAsync.set(`k${i}`, { name: `V${i}`, status: "active" });
+    }
+    await storeAsync.sync();
+    const asyncMs = performance.now() - startAsync;
+    await storeAsync.close();
+
+    const speedup = immMs / asyncMs;
+    console.log(`  Async commit: immediate=${immMs.toFixed(0)}ms, async=${asyncMs.toFixed(0)}ms, speedup=${speedup.toFixed(1)}x`);
+
+    // Async should be significantly faster than immediate
+    expect(speedup).toBeGreaterThan(2);
+
+    // Data should be correct
+    const verify = new Store<TestRecord>();
+    await verify.open(dirAsync, { checkpointThreshold: 10000 });
+    expect(verify.count()).toBe(N);
+    await verify.close();
+  });
+
   it("performance: group commit is faster than immediate for many writes", async () => {
     const N = 500;
 

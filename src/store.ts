@@ -50,6 +50,7 @@ export class Store<T = Record<string, unknown>> {
 
   // Group commit state
   private groupCommit = false;
+  private asyncMode = false;
   private groupBuffer: Operation<T>[] = [];
   private groupSize = 50;
   private groupMs = 100;
@@ -81,12 +82,13 @@ export class Store<T = Record<string, unknown>> {
       if (backend) this.backend = backend;
       if (agentId) this.agentId = agentId;
 
-      // Group commit: enabled when writeMode is "group" AND not multi-writer
-      if (writeMode === "group") {
+      // Group/async commit: enabled when writeMode is "group"/"async" AND not multi-writer
+      if (writeMode === "group" || writeMode === "async") {
         if (agentId) {
-          console.error("opslog: writeMode 'group' is not compatible with multi-writer (agentId). Using 'immediate'.");
+          console.error(`opslog: writeMode '${writeMode}' is not compatible with multi-writer (agentId). Using 'immediate'.`);
         } else {
           this.groupCommit = true;
+          this.asyncMode = writeMode === "async";
           if (groupCommitSize) this.groupSize = groupCommitSize;
           if (groupCommitMs) this.groupMs = groupCommitMs;
         }
@@ -832,12 +834,19 @@ export class Store<T = Record<string, unknown>> {
       // Buffer the op, flush when buffer is full or timer fires
       this.groupBuffer.push(op);
       if (this.groupBuffer.length >= this.groupSize) {
-        await this.flushGroupBuffer();
+        if (this.asyncMode) {
+          // Async: trigger flush in background, don't await
+          this.serialize(() => this.flushGroupBuffer()).catch(() => {});
+        } else {
+          await this.flushGroupBuffer();
+        }
       } else if (!this.groupTimer) {
         this.groupTimer = setTimeout(() => {
           this.serialize(() => this.flushGroupBuffer()).catch(() => {});
         }, this.groupMs);
       }
+      // Async mode: return immediately without waiting for disk I/O
+      if (this.asyncMode) return;
     } else {
       // Immediate: write to disk now
       await this.backend.appendOps(this.activeOpsPath, [op as Operation]);
@@ -848,10 +857,23 @@ export class Store<T = Record<string, unknown>> {
     }
   }
 
-  /** Flush buffered group commit ops to disk in a single write. */
+  /**
+   * Flush buffered ops to disk in a single write.
+   * In group/async mode: drains the in-memory buffer to disk.
+   * Safe to call at any time. No-op if nothing is buffered.
+   */
   async flush(): Promise<void> {
     if (!this.groupCommit || this.groupBuffer.length === 0) return;
     return this.serialize(() => this.flushGroupBuffer());
+  }
+
+  /**
+   * Ensure all buffered operations are durably persisted to disk.
+   * Alias for flush(). Use before process exit when using async write mode
+   * to prevent data loss.
+   */
+  async sync(): Promise<void> {
+    return this.flush();
   }
 
   private async flushGroupBuffer(): Promise<void> {
