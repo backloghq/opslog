@@ -51,6 +51,8 @@ export interface StoreOptions {
   version?: number;
   /** Migration function: called if stored version < current version */
   migrate?: (record: unknown, fromVersion: number) => unknown;
+  /** Open in read-only mode: skips directory lock, rejects all mutations. */
+  readOnly?: boolean;
 }
 
 export interface StoreStats {

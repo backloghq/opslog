@@ -28,7 +28,7 @@ A lightweight storage engine that records every mutation as an operation in an a
 ## Core Properties
 
 - **Crash-safe**: append-only writes can't corrupt existing data. Snapshots are immutable. Manifest is atomically replaced via temp-file-rename.
-- **Concurrency-safe**: async mutation serializer prevents interleaving of concurrent writes. Advisory directory lock prevents multi-process corruption.
+- **Concurrency-safe**: async mutation serializer prevents interleaving of concurrent writes. Advisory directory lock prevents multi-process corruption. Read-only mode enables single-writer/multi-reader across processes.
 - **Zero native dependencies**: pure TypeScript, only Node.js fs
 - **Undo built-in**: operations record before/after state. O(1) ftruncate-based undo.
 - **Sync-ready**: operations are the natural unit for cross-node synchronization

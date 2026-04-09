@@ -721,6 +721,130 @@ describe("Store", () => {
     });
   });
 
+  describe("readOnly mode", () => {
+    it("opens an existing store in readOnly without acquiring lock", async () => {
+      // Create a store with data
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+      await store.set("a", { name: "A", status: "active" });
+      await store.set("b", { name: "B", status: "done" });
+      // Keep the writer open — lock is held
+
+      // Open a second store in readOnly on the same directory
+      const reader = new Store<TestRecord>();
+      await reader.open(tmpDir, { readOnly: true });
+
+      // Reads work
+      expect(reader.get("a")?.name).toBe("A");
+      expect(reader.count()).toBe(2);
+      expect(reader.all()).toHaveLength(2);
+      expect(reader.filter((r) => r.status === "active")).toHaveLength(1);
+      expect(reader.has("a")).toBe(true);
+      expect(reader.entries()).toHaveLength(2);
+
+      await reader.close();
+    });
+
+    it("rejects set in readOnly mode", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+      await store.set("a", { name: "A", status: "active" });
+
+      const reader = new Store<TestRecord>();
+      await reader.open(tmpDir, { readOnly: true });
+
+      expect(() => reader.set("b", { name: "B", status: "active" })).toThrow("read-only");
+      await reader.close();
+    });
+
+    it("rejects delete in readOnly mode", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+      await store.set("a", { name: "A", status: "active" });
+
+      const reader = new Store<TestRecord>();
+      await reader.open(tmpDir, { readOnly: true });
+
+      expect(() => reader.delete("a")).toThrow("read-only");
+      await reader.close();
+    });
+
+    it("rejects batch in readOnly mode", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+
+      const reader = new Store<TestRecord>();
+      await reader.open(tmpDir, { readOnly: true });
+
+      await expect(reader.batch(() => {})).rejects.toThrow("read-only");
+      await reader.close();
+    });
+
+    it("rejects undo in readOnly mode", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+
+      const reader = new Store<TestRecord>();
+      await reader.open(tmpDir, { readOnly: true });
+
+      await expect(reader.undo()).rejects.toThrow("read-only");
+      await reader.close();
+    });
+
+    it("rejects compact in readOnly mode", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+
+      const reader = new Store<TestRecord>();
+      await reader.open(tmpDir, { readOnly: true });
+
+      await expect(reader.compact()).rejects.toThrow("read-only");
+      await reader.close();
+    });
+
+    it("rejects archive in readOnly mode", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+
+      const reader = new Store<TestRecord>();
+      await reader.open(tmpDir, { readOnly: true });
+
+      await expect(reader.archive(() => true)).rejects.toThrow("read-only");
+      await reader.close();
+    });
+
+    it("throws when opening readOnly on non-existent store", async () => {
+      const reader = new Store<TestRecord>();
+      await expect(
+        reader.open(join(tmpDir, "nonexistent"), { readOnly: true }),
+      ).rejects.toThrow("readOnly");
+    });
+
+    it("getHistory and getOps work in readOnly", async () => {
+      await store.open(tmpDir, { checkpointOnClose: false, checkpointThreshold: 1000 });
+      await store.set("a", { name: "V1", status: "active" });
+      await store.set("a", { name: "V2", status: "active" });
+      await store.close();
+
+      const reader = new Store<TestRecord>();
+      await reader.open(tmpDir, { readOnly: true });
+
+      expect(reader.getHistory("a")).toHaveLength(2);
+      expect(reader.getOps()).toHaveLength(2);
+      await reader.close();
+    });
+
+    it("close does not checkpoint in readOnly", async () => {
+      await store.open(tmpDir, { checkpointOnClose: false, checkpointThreshold: 1000 });
+      await store.set("a", { name: "A", status: "active" });
+      await store.close();
+
+      const reader = new Store<TestRecord>();
+      await reader.open(tmpDir, { readOnly: true });
+      // close should not write anything — no error even though ops exist
+      await reader.close();
+
+      // Reopen writable — ops should still be there (not checkpointed by reader)
+      const writer = new Store<TestRecord>();
+      await writer.open(tmpDir, { checkpointThreshold: 1000 });
+      expect(writer.stats().opsCount).toBe(1);
+      await writer.close();
+    });
+  });
+
   describe("archive with default period", () => {
     it("uses current quarter when no segment specified", async () => {
       await store.open(tmpDir, { checkpointThreshold: 1000 });

@@ -29,6 +29,7 @@ export class Store<T = Record<string, unknown>> {
     checkpointOnClose: true,
     version: 1,
     migrate: (r) => r as T,
+    readOnly: false,
   };
   private archivedRecordCount = 0;
   private batching = false;
@@ -57,15 +58,19 @@ export class Store<T = Record<string, unknown>> {
       this.options = { ...this.options, ...options };
     }
 
-    await mkdir(join(dir, "snapshots"), { recursive: true });
-    await mkdir(join(dir, "ops"), { recursive: true });
-    await mkdir(join(dir, "archive"), { recursive: true });
-
-    this.lockFh = await acquireLock(dir);
+    if (!this.options.readOnly) {
+      await mkdir(join(dir, "snapshots"), { recursive: true });
+      await mkdir(join(dir, "ops"), { recursive: true });
+      await mkdir(join(dir, "archive"), { recursive: true });
+      this.lockFh = await acquireLock(dir);
+    }
 
     const manifest = await readManifest(dir);
 
     if (!manifest) {
+      if (this.options.readOnly) {
+        throw new Error("Cannot open in readOnly mode: no existing store found");
+      }
       // Fresh store — create empty snapshot and manifest
       const snapshotPath = await writeSnapshot(dir, new Map(), this.options.version);
       const opsFilename = `ops-${Date.now()}.jsonl`;
@@ -121,7 +126,7 @@ export class Store<T = Record<string, unknown>> {
 
   async close(): Promise<void> {
     this.ensureOpen();
-    if (this.options.checkpointOnClose && this.ops.length > 0) {
+    if (!this.options.readOnly && this.options.checkpointOnClose && this.ops.length > 0) {
       await this.serialize(() => this._compact());
     }
     if (this.lockFh) {
@@ -138,6 +143,7 @@ export class Store<T = Record<string, unknown>> {
 
   set(id: string, value: T): Promise<void> | void {
     this.ensureOpen();
+    this.ensureWritable();
     if (this.batching) {
       this._setSync(id, value);
       return;
@@ -147,6 +153,7 @@ export class Store<T = Record<string, unknown>> {
 
   delete(id: string): Promise<void> | void {
     this.ensureOpen();
+    this.ensureWritable();
     if (this.batching) {
       this._deleteSync(id);
       return;
@@ -190,11 +197,13 @@ export class Store<T = Record<string, unknown>> {
 
   async batch(fn: () => void): Promise<void> {
     this.ensureOpen();
+    this.ensureWritable();
     return this.serialize(() => this._batch(fn));
   }
 
   async undo(): Promise<boolean> {
     this.ensureOpen();
+    this.ensureWritable();
     return this.serialize(() => this._undo());
   }
 
@@ -211,6 +220,7 @@ export class Store<T = Record<string, unknown>> {
 
   async compact(): Promise<void> {
     this.ensureOpen();
+    this.ensureWritable();
     return this.serialize(() => this._compact());
   }
 
@@ -219,6 +229,7 @@ export class Store<T = Record<string, unknown>> {
     segment?: string,
   ): Promise<number> {
     this.ensureOpen();
+    this.ensureWritable();
     return this.serialize(() => this._archive(predicate, segment));
   }
 
@@ -395,6 +406,10 @@ export class Store<T = Record<string, unknown>> {
 
   private ensureOpen(): void {
     if (!this.opened) throw new Error("Store is not open. Call open() first.");
+  }
+
+  private ensureWritable(): void {
+    if (this.options.readOnly) throw new Error("Store is read-only. Cannot perform mutations.");
   }
 
   private applyOp(op: Operation<T>): void {
