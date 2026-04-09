@@ -47,6 +47,13 @@ export class Store<T = Record<string, unknown>> {
   // Multi-writer state
   private agentId?: string;
   private clock: LamportClock | null = null;
+
+  // Group commit state
+  private groupCommit = false;
+  private groupBuffer: Operation<T>[] = [];
+  private groupSize = 50;
+  private groupMs = 100;
+  private groupTimer: ReturnType<typeof setTimeout> | null = null;
   private manifestVersion: string | null = null;
 
   /**
@@ -69,10 +76,21 @@ export class Store<T = Record<string, unknown>> {
   async open(dir: string, options?: StoreOptions): Promise<void> {
     this.dir = dir;
     if (options) {
-      const { backend, agentId, ...rest } = options;
+      const { backend, agentId, writeMode, groupCommitSize, groupCommitMs, ...rest } = options;
       this.coreOpts = { ...this.coreOpts, ...rest };
       if (backend) this.backend = backend;
       if (agentId) this.agentId = agentId;
+
+      // Group commit: enabled when writeMode is "group" AND not multi-writer
+      if (writeMode === "group") {
+        if (agentId) {
+          console.error("opslog: writeMode 'group' is not compatible with multi-writer (agentId). Using 'immediate'.");
+        } else {
+          this.groupCommit = true;
+          if (groupCommitSize) this.groupSize = groupCommitSize;
+          if (groupCommitMs) this.groupMs = groupCommitMs;
+        }
+      }
     }
     this.backend ??= new FsBackend();
 
@@ -243,6 +261,10 @@ export class Store<T = Record<string, unknown>> {
   async close(): Promise<void> {
     this.ensureOpen();
     this.unwatch();
+    // Flush any buffered group commit ops before checkpoint
+    if (this.groupCommit && this.groupBuffer.length > 0) {
+      await this.serialize(() => this.flushGroupBuffer());
+    }
     if (
       !this.coreOpts.readOnly &&
       this.coreOpts.checkpointOnClose &&
@@ -596,6 +618,9 @@ export class Store<T = Record<string, unknown>> {
   }
 
   private async _compact(): Promise<void> {
+    // Flush group buffer before checkpoint
+    if (this.groupCommit) await this.flushGroupBuffer();
+
     if (this.isMultiWriter()) {
       await this._compactMultiWriter();
       return;
@@ -801,11 +826,45 @@ export class Store<T = Record<string, unknown>> {
   }
 
   private async persistOp(op: Operation<T>): Promise<void> {
-    await this.backend.appendOps(this.activeOpsPath, [op as Operation]);
     this.ops.push(op);
+
+    if (this.groupCommit) {
+      // Buffer the op, flush when buffer is full or timer fires
+      this.groupBuffer.push(op);
+      if (this.groupBuffer.length >= this.groupSize) {
+        await this.flushGroupBuffer();
+      } else if (!this.groupTimer) {
+        this.groupTimer = setTimeout(() => {
+          this.serialize(() => this.flushGroupBuffer()).catch(() => {});
+        }, this.groupMs);
+      }
+    } else {
+      // Immediate: write to disk now
+      await this.backend.appendOps(this.activeOpsPath, [op as Operation]);
+    }
+
     if (this.ops.length >= this.coreOpts.checkpointThreshold) {
       await this._compact();
     }
+  }
+
+  /** Flush buffered group commit ops to disk in a single write. */
+  async flush(): Promise<void> {
+    if (!this.groupCommit || this.groupBuffer.length === 0) return;
+    return this.serialize(() => this.flushGroupBuffer());
+  }
+
+  private async flushGroupBuffer(): Promise<void> {
+    if (this.groupBuffer.length === 0) return;
+    if (this.groupTimer) {
+      clearTimeout(this.groupTimer);
+      this.groupTimer = null;
+    }
+    await this.backend.appendOps(
+      this.activeOpsPath,
+      this.groupBuffer as Operation[],
+    );
+    this.groupBuffer = [];
   }
 
   private defaultPeriod(): string {

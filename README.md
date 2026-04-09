@@ -134,10 +134,40 @@ await store.open(dir, {
   version: 1,                     // Schema version
   migrate: (record, fromVersion) => record, // Migration function
   readOnly: false,                // Open in read-only mode (default: false)
+  writeMode: "immediate",         // "immediate" (default) or "group" (buffered, ~12x faster)
+  groupCommitSize: 50,            // Group: flush after N ops (default: 50)
+  groupCommitMs: 100,             // Group: flush after N ms (default: 100)
   agentId: "agent-A",             // Enable multi-writer mode (optional)
   backend: new FsBackend(),       // Custom storage backend (optional, default: FsBackend)
 });
 ```
+
+## Group Commit
+
+Buffer writes in memory and flush as a single disk write. ~12x faster for sustained writes.
+
+```typescript
+const store = new Store();
+await store.open("./data", {
+  writeMode: "group",     // Buffer ops, flush periodically
+  groupCommitSize: 50,    // Flush when buffer has 50 ops
+  groupCommitMs: 100,     // Or after 100ms idle
+});
+
+// Writes are buffered — no fsync per op
+await store.set("a", valueA);
+await store.set("b", valueB);  // Both flushed together
+
+// Explicit flush if needed
+await store.flush();
+
+// close() always flushes before shutting down
+await store.close();
+```
+
+**Safety:** Forced to `"immediate"` when `agentId` is set (multi-writer mode). Other agents can't see buffered ops, so group commit is single-writer only.
+
+**Tradeoff:** A crash can lose ops that haven't been flushed yet (up to `groupCommitMs` milliseconds of data). Use `"immediate"` (default) when every write must be durable.
 
 ## Multi-Writer Mode
 
