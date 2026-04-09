@@ -134,11 +134,20 @@ await store.open(dir, {
 });
 ```
 
+## Concurrency
+
+All state-mutating operations (`set`, `delete`, `batch`, `undo`, `compact`, `archive`) are serialized through an internal async mutex. This prevents interleaving of concurrent mutations — e.g., `compact()` swapping the ops file while `set()` is appending, or `undo()` truncating while `set()` is writing.
+
+Read operations (`get`, `all`, `filter`, `count`, `has`, `entries`) are synchronous and lock-free.
+
+An advisory directory write lock (`.lock` file with PID) prevents two processes from opening the same store. Stale locks from crashed processes are automatically recovered.
+
 ## Crash Safety
 
 - **Ops file**: append-only writes. A crash mid-append loses at most the last operation. Malformed lines are skipped on recovery.
 - **Snapshots**: immutable. Written to a temp file, then atomically renamed.
 - **Manifest**: atomically replaced via temp-file-rename. Always points to a valid snapshot.
+- **Undo**: uses `ftruncate()` — a single atomic POSIX syscall. O(1) regardless of file size.
 
 No data corruption on crash. At most one in-flight operation is lost.
 

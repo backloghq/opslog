@@ -95,5 +95,49 @@ describe("WAL", () => {
       const ops = await readOps(opsFile);
       expect(ops).toHaveLength(0);
     });
+
+    it("handles empty file", async () => {
+      const { writeFile: wf } = await import("node:fs/promises");
+      await wf(opsFile, "", "utf-8");
+
+      const removed = await truncateLastOp(opsFile);
+      expect(removed).toBe(false);
+    });
+
+    it("handles operation larger than 4KB", async () => {
+      // Create an operation with data larger than 4KB
+      const bigData = { x: "a".repeat(8000) };
+      await appendOp(opsFile, { ts: "1", op: "set", id: "a", data: { x: 1 }, prev: null });
+      await appendOp(opsFile, { ts: "2", op: "set", id: "b", data: bigData, prev: null });
+
+      const removed = await truncateLastOp(opsFile);
+      expect(removed).toBe(true);
+
+      const ops = await readOps(opsFile);
+      expect(ops).toHaveLength(1);
+      expect(ops[0].id).toBe("a");
+    });
+
+    it("handles single operation larger than 4KB", async () => {
+      const bigData = { x: "a".repeat(8000) };
+      await appendOp(opsFile, { ts: "1", op: "set", id: "a", data: bigData, prev: null });
+
+      const removed = await truncateLastOp(opsFile);
+      expect(removed).toBe(true);
+
+      const ops = await readOps(opsFile);
+      expect(ops).toHaveLength(0);
+    });
+
+    it("preserves all preceding operations after truncate", async () => {
+      for (let i = 0; i < 10; i++) {
+        await appendOp(opsFile, { ts: String(i), op: "set", id: `item-${i}`, data: { x: i }, prev: null });
+      }
+
+      await truncateLastOp(opsFile);
+      const ops = await readOps(opsFile);
+      expect(ops).toHaveLength(9);
+      expect(ops[8].id).toBe("item-8");
+    });
   });
 });

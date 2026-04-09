@@ -1,4 +1,5 @@
 import { mkdir, writeFile } from "node:fs/promises";
+import type { FileHandle } from "node:fs/promises";
 import { join } from "node:path";
 import type { Operation, StoreOptions, StoreStats } from "./types.js";
 import { appendOp, appendOps, readOps, truncateLastOp } from "./wal.js";
@@ -12,6 +13,7 @@ import {
   loadArchiveSegment,
   writeArchiveSegment,
 } from "./archive.js";
+import { acquireLock, releaseLock } from "./lock.js";
 
 export class Store<T = Record<string, unknown>> {
   private dir = "";
@@ -31,6 +33,23 @@ export class Store<T = Record<string, unknown>> {
   private archivedRecordCount = 0;
   private batching = false;
   private batchOps: Operation<T>[] = [];
+  private _lock: Promise<void> = Promise.resolve();
+  private lockFh: FileHandle | null = null;
+
+  /**
+   * Serialize all state-mutating operations through a promise chain.
+   * This prevents interleaving of async mutations (e.g. compact + set,
+   * undo + set) which could corrupt the WAL or in-memory state.
+   * Read operations remain synchronous and lock-free.
+   */
+  private serialize<R>(fn: () => Promise<R>): Promise<R> {
+    const prev = this._lock;
+    let resolve!: () => void;
+    this._lock = new Promise<void>((r) => {
+      resolve = r;
+    });
+    return prev.then(fn).finally(() => resolve());
+  }
 
   async open(dir: string, options?: StoreOptions): Promise<void> {
     this.dir = dir;
@@ -41,6 +60,8 @@ export class Store<T = Record<string, unknown>> {
     await mkdir(join(dir, "snapshots"), { recursive: true });
     await mkdir(join(dir, "ops"), { recursive: true });
     await mkdir(join(dir, "archive"), { recursive: true });
+
+    this.lockFh = await acquireLock(dir);
 
     const manifest = await readManifest(dir);
 
@@ -101,7 +122,11 @@ export class Store<T = Record<string, unknown>> {
   async close(): Promise<void> {
     this.ensureOpen();
     if (this.options.checkpointOnClose && this.ops.length > 0) {
-      await this.compact();
+      await this.serialize(() => this._compact());
+    }
+    if (this.lockFh) {
+      await releaseLock(this.dir, this.lockFh);
+      this.lockFh = null;
     }
     this.opened = false;
   }
@@ -113,42 +138,20 @@ export class Store<T = Record<string, unknown>> {
 
   set(id: string, value: T): Promise<void> | void {
     this.ensureOpen();
-    const prev = this.records.get(id) ?? null;
-    const op: Operation<T> = {
-      ts: new Date().toISOString(),
-      op: "set",
-      id,
-      data: value,
-      prev,
-    };
-    this.records.set(id, value);
-
     if (this.batching) {
-      this.batchOps.push(op);
+      this._setSync(id, value);
       return;
     }
-    return this.persistOp(op);
+    return this.serialize(() => this._set(id, value));
   }
 
   delete(id: string): Promise<void> | void {
     this.ensureOpen();
-    const prev = this.records.get(id);
-    if (prev === undefined) {
-      throw new Error(`Record '${id}' not found`);
-    }
-    const op: Operation<T> = {
-      ts: new Date().toISOString(),
-      op: "delete",
-      id,
-      prev,
-    };
-    this.records.delete(id);
-
     if (this.batching) {
-      this.batchOps.push(op);
+      this._deleteSync(id);
       return;
     }
-    return this.persistOp(op);
+    return this.serialize(() => this._delete(id));
   }
 
   has(id: string): boolean {
@@ -187,6 +190,118 @@ export class Store<T = Record<string, unknown>> {
 
   async batch(fn: () => void): Promise<void> {
     this.ensureOpen();
+    return this.serialize(() => this._batch(fn));
+  }
+
+  async undo(): Promise<boolean> {
+    this.ensureOpen();
+    return this.serialize(() => this._undo());
+  }
+
+  getHistory(id: string): Operation<T>[] {
+    this.ensureOpen();
+    return this.ops.filter((op) => op.id === id);
+  }
+
+  getOps(since?: string): Operation<T>[] {
+    this.ensureOpen();
+    if (!since) return [...this.ops];
+    return this.ops.filter((op) => op.ts > since);
+  }
+
+  async compact(): Promise<void> {
+    this.ensureOpen();
+    return this.serialize(() => this._compact());
+  }
+
+  async archive(
+    predicate: (value: T, id: string) => boolean,
+    segment?: string,
+  ): Promise<number> {
+    this.ensureOpen();
+    return this.serialize(() => this._archive(predicate, segment));
+  }
+
+  listArchiveSegments(): string[] {
+    this.ensureOpen();
+    return [...this.archiveSegments];
+  }
+
+  async loadArchive(segment: string): Promise<Map<string, T>> {
+    this.ensureOpen();
+    const segmentPath = this.archiveSegments.find((s) => s === `archive/archive-${segment}.json`) || this.archiveSegments.find((s) => s.includes(segment));
+    if (!segmentPath) throw new Error(`Archive segment '${segment}' not found`);
+    return loadArchiveSegment(this.dir, segmentPath);
+  }
+
+  stats(): StoreStats {
+    this.ensureOpen();
+    return {
+      activeRecords: this.records.size,
+      opsCount: this.ops.length,
+      archiveSegments: this.archiveSegments.length,
+    };
+  }
+
+  // --- Private mutation implementations ---
+
+  private async _set(id: string, value: T): Promise<void> {
+    const prev = this.records.get(id) ?? null;
+    const op: Operation<T> = {
+      ts: new Date().toISOString(),
+      op: "set",
+      id,
+      data: value,
+      prev,
+    };
+    this.records.set(id, value);
+    await this.persistOp(op);
+  }
+
+  private _setSync(id: string, value: T): void {
+    const prev = this.records.get(id) ?? null;
+    const op: Operation<T> = {
+      ts: new Date().toISOString(),
+      op: "set",
+      id,
+      data: value,
+      prev,
+    };
+    this.records.set(id, value);
+    this.batchOps.push(op);
+  }
+
+  private async _delete(id: string): Promise<void> {
+    const prev = this.records.get(id);
+    if (prev === undefined) {
+      throw new Error(`Record '${id}' not found`);
+    }
+    const op: Operation<T> = {
+      ts: new Date().toISOString(),
+      op: "delete",
+      id,
+      prev,
+    };
+    this.records.delete(id);
+    await this.persistOp(op);
+  }
+
+  private _deleteSync(id: string): void {
+    const prev = this.records.get(id);
+    if (prev === undefined) {
+      throw new Error(`Record '${id}' not found`);
+    }
+    const op: Operation<T> = {
+      ts: new Date().toISOString(),
+      op: "delete",
+      id,
+      prev,
+    };
+    this.records.delete(id);
+    this.batchOps.push(op);
+  }
+
+  private async _batch(fn: () => void): Promise<void> {
     this.batching = true;
     this.batchOps = [];
     try {
@@ -196,7 +311,7 @@ export class Store<T = Record<string, unknown>> {
         await appendOps(join(this.dir, this.activeOpsPath), this.batchOps);
         this.ops.push(...this.batchOps);
         if (this.ops.length >= this.options.checkpointThreshold) {
-          await this.compact();
+          await this._compact();
         }
       }
     } catch (err) {
@@ -215,8 +330,7 @@ export class Store<T = Record<string, unknown>> {
     }
   }
 
-  async undo(): Promise<boolean> {
-    this.ensureOpen();
+  private async _undo(): Promise<boolean> {
     if (this.ops.length === 0) return false;
 
     const lastOp = this.ops[this.ops.length - 1];
@@ -228,19 +342,7 @@ export class Store<T = Record<string, unknown>> {
     return true;
   }
 
-  getHistory(id: string): Operation<T>[] {
-    this.ensureOpen();
-    return this.ops.filter((op) => op.id === id);
-  }
-
-  getOps(since?: string): Operation<T>[] {
-    this.ensureOpen();
-    if (!since) return [...this.ops];
-    return this.ops.filter((op) => op.ts > since);
-  }
-
-  async compact(): Promise<void> {
-    this.ensureOpen();
+  private async _compact(): Promise<void> {
     const snapshotPath = await writeSnapshot(this.dir, this.records, this.version);
     const opsFilename = `ops-${Date.now()}.jsonl`;
     const opsPath = `ops/${opsFilename}`;
@@ -264,11 +366,10 @@ export class Store<T = Record<string, unknown>> {
     this.ops = [];
   }
 
-  async archive(
+  private async _archive(
     predicate: (value: T, id: string) => boolean,
     segment?: string,
   ): Promise<number> {
-    this.ensureOpen();
     const toArchive = new Map<string, T>();
     for (const [id, value] of this.records) {
       if (predicate(value, id)) toArchive.set(id, value);
@@ -286,30 +387,11 @@ export class Store<T = Record<string, unknown>> {
     }
     this.archivedRecordCount += toArchive.size;
 
-    await this.compact();
+    await this._compact();
     return toArchive.size;
   }
 
-  async loadArchive(segment: string): Promise<Map<string, T>> {
-    this.ensureOpen();
-    const segmentPath = this.archiveSegments.find((s) => s === `archive/archive-${segment}.json`) || this.archiveSegments.find((s) => s.includes(segment));
-    if (!segmentPath) throw new Error(`Archive segment '${segment}' not found`);
-    return loadArchiveSegment(this.dir, segmentPath);
-  }
-
-  listArchiveSegments(): string[] {
-    this.ensureOpen();
-    return [...this.archiveSegments];
-  }
-
-  stats(): StoreStats {
-    this.ensureOpen();
-    return {
-      activeRecords: this.records.size,
-      opsCount: this.ops.length,
-      archiveSegments: this.archiveSegments.length,
-    };
-  }
+  // --- Helpers ---
 
   private ensureOpen(): void {
     if (!this.opened) throw new Error("Store is not open. Call open() first.");
@@ -340,7 +422,7 @@ export class Store<T = Record<string, unknown>> {
     await appendOp(join(this.dir, this.activeOpsPath), op);
     this.ops.push(op);
     if (this.ops.length >= this.options.checkpointThreshold) {
-      await this.compact();
+      await this._compact();
     }
   }
 

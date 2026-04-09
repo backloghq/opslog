@@ -1,4 +1,4 @@
-import { appendFile, readFile, writeFile } from "node:fs/promises";
+import { appendFile, readFile, open } from "node:fs/promises";
 import type { Operation } from "./types.js";
 import { validateOp } from "./validate.js";
 
@@ -35,16 +35,47 @@ export async function readOps<T>(path: string): Promise<Operation<T>[]> {
 }
 
 export async function truncateLastOp(path: string): Promise<boolean> {
-  let content: string;
+  let fh;
   try {
-    content = await readFile(path, "utf-8");
+    fh = await open(path, "r+");
   } catch {
     return false;
   }
-  const lines = content.trim().split("\n").filter(Boolean);
-  if (lines.length === 0) return false;
-  lines.pop();
-  const newContent = lines.length > 0 ? lines.join("\n") + "\n" : "";
-  await writeFile(path, newContent, "utf-8");
-  return true;
+  try {
+    const { size } = await fh.stat();
+    if (size === 0) return false;
+
+    // Read the tail of the file to find the second-to-last newline.
+    // 4KB handles operations up to ~4KB. For larger ops, read in chunks.
+    let readSize = Math.min(4096, size);
+    let readPos = size - readSize;
+    let lastNl = -1;
+
+    while (true) {
+      const buf = Buffer.alloc(readSize);
+      await fh.read(buf, 0, readSize, readPos);
+      const text = buf.toString("utf-8", 0, readSize);
+
+      // Find the second-to-last newline (skip trailing newline)
+      lastNl = text.lastIndexOf("\n", text.length - 2);
+      if (lastNl !== -1) {
+        await fh.truncate(readPos + lastNl + 1);
+        return true;
+      }
+
+      // No newline found in this chunk — need to read further back
+      if (readPos === 0) {
+        // Only one line in the entire file — truncate to empty
+        await fh.truncate(0);
+        return true;
+      }
+
+      // Read the next chunk further back
+      const nextSize = Math.min(4096, readPos);
+      readPos -= nextSize;
+      readSize = nextSize;
+    }
+  } finally {
+    await fh.close();
+  }
 }

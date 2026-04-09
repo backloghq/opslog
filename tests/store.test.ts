@@ -74,8 +74,8 @@ describe("Store", () => {
       expect(store.has("a")).toBe(false);
     });
 
-    it("throws on deleting non-existent record", () => {
-      expect(() => store.delete("nonexistent")).toThrow("not found");
+    it("throws on deleting non-existent record", async () => {
+      await expect(store.delete("nonexistent")).rejects.toThrow("not found");
     });
 
     it("has() returns correct boolean", async () => {
@@ -471,6 +471,9 @@ describe("Store", () => {
       // Append malformed lines
       await writeFile(opsPath, await readFile(opsPath, "utf-8") + "not-json\n{}\n", "utf-8");
 
+      // Simulate crash: release lock without checkpoint
+      await store.close();
+
       // Reopen — should recover valid ops and skip bad ones
       const store2 = new Store<TestRecord>();
       await store2.open(tmpDir);
@@ -606,11 +609,12 @@ describe("Store", () => {
 
   describe("persistence and recovery", () => {
     it("recovers state from ops after unclean shutdown", async () => {
-      // Open, write, don't close (simulate crash — no checkpoint)
+      // Open, write, close without checkpoint (simulate crash)
       await store.open(tmpDir, { checkpointOnClose: false, checkpointThreshold: 1000 });
       await store.set("a", { name: "A", status: "active" });
       await store.set("b", { name: "B", status: "active" });
-      // Don't close — simulates crash
+      // Close without checkpoint to simulate crash recovery on next open
+      await store.close();
 
       // Reopen — should recover from ops replay
       const store2 = new Store<TestRecord>();
@@ -646,6 +650,122 @@ describe("Store", () => {
       expect(s.activeRecords).toBe(2);
       expect(s.opsCount).toBe(2);
       expect(s.archiveSegments).toBe(0);
+    });
+  });
+
+  describe("directory lock", () => {
+    it("prevents two stores from opening the same directory", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+
+      const store2 = new Store<TestRecord>();
+      await expect(store2.open(tmpDir)).rejects.toThrow("Store is locked by process");
+    });
+
+    it("allows reopening after close", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+      await store.set("a", { name: "A", status: "active" });
+      await store.close();
+
+      const store2 = new Store<TestRecord>();
+      await store2.open(tmpDir);
+      expect(store2.get("a")?.name).toBe("A");
+      await store2.close();
+    });
+
+    it("cleans up lock file on close", async () => {
+      const { access } = await import("node:fs/promises");
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+
+      // Lock file exists while open
+      await expect(access(join(tmpDir, ".lock"))).resolves.toBeUndefined();
+
+      await store.close();
+
+      // Lock file removed after close
+      await expect(access(join(tmpDir, ".lock"))).rejects.toThrow();
+    });
+  });
+
+  describe("concurrency", () => {
+    it("concurrent sets do not lose operations", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+
+      // Fire 20 concurrent sets — all should succeed without interleaving
+      const promises = [];
+      for (let i = 0; i < 20; i++) {
+        promises.push(store.set(`item-${i}`, { name: `Item ${i}`, status: "active" }));
+      }
+      await Promise.all(promises);
+
+      expect(store.count()).toBe(20);
+      expect(store.stats().opsCount).toBe(20);
+    });
+
+    it("concurrent set and compact do not lose data", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+
+      // Set some initial data
+      for (let i = 0; i < 5; i++) {
+        await store.set(`pre-${i}`, { name: `Pre ${i}`, status: "active" });
+      }
+
+      // Fire sets and a compact concurrently
+      const promises = [];
+      for (let i = 0; i < 10; i++) {
+        promises.push(store.set(`item-${i}`, { name: `Item ${i}`, status: "active" }));
+        if (i === 5) {
+          promises.push(store.compact());
+        }
+      }
+      await Promise.all(promises);
+
+      // All records should be present
+      expect(store.count()).toBe(15);
+      for (let i = 0; i < 5; i++) {
+        expect(store.has(`pre-${i}`)).toBe(true);
+      }
+      for (let i = 0; i < 10; i++) {
+        expect(store.has(`item-${i}`)).toBe(true);
+      }
+    });
+
+    it("concurrent set and undo are serialized correctly", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+
+      await store.set("a", { name: "A", status: "active" });
+      await store.set("b", { name: "B", status: "active" });
+
+      // Fire undo and set concurrently — undo should complete before set
+      const undoPromise = store.undo();
+      const setPromise = store.set("c", { name: "C", status: "active" });
+      await Promise.all([undoPromise, setPromise]);
+
+      // "b" was undone, "c" was added
+      const undone = await undoPromise;
+      expect(undone).toBe(true);
+      expect(store.has("a")).toBe(true);
+      expect(store.has("b")).toBe(false);
+      expect(store.has("c")).toBe(true);
+    });
+
+    it("data survives concurrent operations + reopen", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+
+      const promises = [];
+      for (let i = 0; i < 10; i++) {
+        promises.push(store.set(`item-${i}`, { name: `Item ${i}`, status: "active" }));
+      }
+      await Promise.all(promises);
+      await store.close();
+
+      // Reopen and verify all data persisted
+      const store2 = new Store<TestRecord>();
+      await store2.open(tmpDir);
+      expect(store2.count()).toBe(10);
+      for (let i = 0; i < 10; i++) {
+        expect(store2.has(`item-${i}`)).toBe(true);
+      }
+      await store2.close();
     });
   });
 });
