@@ -132,6 +132,38 @@ describe("Store", () => {
       expect(store.count()).toBe(3);
     });
 
+    it("supports delete inside batch", async () => {
+      await store.set("a", { name: "A", status: "active" });
+      await store.set("b", { name: "B", status: "active" });
+      await store.set("c", { name: "C", status: "active" });
+
+      await store.batch(() => {
+        store.delete("a");
+        store.delete("b");
+      });
+
+      expect(store.count()).toBe(1);
+      expect(store.has("c")).toBe(true);
+      expect(store.has("a")).toBe(false);
+      expect(store.has("b")).toBe(false);
+    });
+
+    it("auto-checkpoints inside batch when threshold reached", async () => {
+      await store.close();
+      store = new Store<TestRecord>();
+      await store.open(tmpDir, { checkpointThreshold: 3 });
+
+      await store.batch(() => {
+        store.set("a", { name: "A", status: "active" });
+        store.set("b", { name: "B", status: "active" });
+        store.set("c", { name: "C", status: "active" });
+      });
+
+      // Threshold of 3 hit — should have auto-checkpointed
+      expect(store.stats().opsCount).toBe(0);
+      expect(store.count()).toBe(3);
+    });
+
     it("rolls back on error", async () => {
       await store.set("x", { name: "X", status: "active" });
       await expect(
@@ -143,6 +175,42 @@ describe("Store", () => {
       // "a" should be rolled back, "x" should remain
       expect(store.has("a")).toBe(false);
       expect(store.has("x")).toBe(true);
+    });
+  });
+
+  describe("batch with mixed operations", () => {
+    beforeEach(async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+    });
+
+    it("handles set and delete in same batch", async () => {
+      await store.set("x", { name: "X", status: "active" });
+
+      await store.batch(() => {
+        store.set("a", { name: "A", status: "active" });
+        store.set("b", { name: "B", status: "active" });
+        store.delete("x");
+      });
+
+      expect(store.count()).toBe(2);
+      expect(store.has("a")).toBe(true);
+      expect(store.has("b")).toBe(true);
+      expect(store.has("x")).toBe(false);
+    });
+
+    it("persists batch with deletes across reopen", async () => {
+      await store.set("x", { name: "X", status: "active" });
+      await store.batch(() => {
+        store.set("a", { name: "A", status: "active" });
+        store.delete("x");
+      });
+      await store.close();
+
+      const store2 = new Store<TestRecord>();
+      await store2.open(tmpDir);
+      expect(store2.has("a")).toBe(true);
+      expect(store2.has("x")).toBe(false);
+      await store2.close();
     });
   });
 
@@ -650,6 +718,39 @@ describe("Store", () => {
       expect(s.activeRecords).toBe(2);
       expect(s.opsCount).toBe(2);
       expect(s.archiveSegments).toBe(0);
+    });
+  });
+
+  describe("archive with default period", () => {
+    it("uses current quarter when no segment specified", async () => {
+      await store.open(tmpDir, { checkpointThreshold: 1000 });
+      await store.set("a", { name: "A", status: "done" });
+
+      const count = await store.archive((r) => r.status === "done");
+      expect(count).toBe(1);
+
+      const segments = store.listArchiveSegments();
+      expect(segments).toHaveLength(1);
+      // Should contain year-Q format
+      expect(segments[0]).toMatch(/\d{4}-Q[1-4]/);
+    });
+  });
+
+  describe("WAL replay with deletes", () => {
+    it("replays delete operations from ops file on reopen", async () => {
+      await store.open(tmpDir, { checkpointOnClose: false, checkpointThreshold: 1000 });
+      await store.set("a", { name: "A", status: "active" });
+      await store.set("b", { name: "B", status: "active" });
+      await store.delete("a");
+      await store.close();
+
+      // Reopen — should replay set+set+delete
+      const store2 = new Store<TestRecord>();
+      await store2.open(tmpDir);
+      expect(store2.has("a")).toBe(false);
+      expect(store2.has("b")).toBe(true);
+      expect(store2.count()).toBe(1);
+      await store2.close();
     });
   });
 
