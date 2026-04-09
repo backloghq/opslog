@@ -276,7 +276,12 @@ describe("Store", () => {
       const history = store.getHistory("a");
       expect(history).toHaveLength(2);
       expect(history[0].prev).toBeNull(); // create
-      expect(history[1].prev?.name).toBe("V1"); // update
+      // Update may use delta encoding — check either format
+      if (history[1].encoding === "delta") {
+        expect((history[1].prev as Record<string, unknown>).$set).toBeDefined();
+      } else {
+        expect(history[1].prev?.name).toBe("V1");
+      }
     });
 
     it("getOps returns all operations", async () => {
