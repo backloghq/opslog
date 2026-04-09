@@ -32,7 +32,7 @@ All I/O goes through the `StorageBackend` interface. `FsBackend` (filesystem) is
 
 ### Group Commit
 
-`writeMode: "group"` buffers ops in memory and flushes as a single disk write (~12x faster). Configurable via `groupCommitSize` (default 50) and `groupCommitMs` (default 100). Forced to `"immediate"` when `agentId` is set (multi-writer safety). `store.flush()` for explicit flush. Buffer flushed on `close()` and `compact()`.
+`writeMode: "group"` buffers ops in memory and flushes as a single disk write (~12x faster). `writeMode: "async"` goes further — `set()`/`delete()` resolve immediately on buffer, background flush handles persistence (~50x faster, data lost on crash). Configurable via `groupCommitSize` (default 50) and `groupCommitMs` (default 100). Forced to `"immediate"` when `agentId` is set (multi-writer safety). `store.flush()` / `store.sync()` for explicit flush. Buffer flushed on `close()` and `compact()`.
 
 ### Multi-Writer Concurrency
 

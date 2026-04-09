@@ -134,7 +134,7 @@ await store.open(dir, {
   version: 1,                     // Schema version
   migrate: (record, fromVersion) => record, // Migration function
   readOnly: false,                // Open in read-only mode (default: false)
-  writeMode: "immediate",         // "immediate" (default) or "group" (buffered, ~12x faster)
+  writeMode: "immediate",         // "immediate" (default), "group" (~12x faster), or "async" (~50x faster, lossy on crash)
   groupCommitSize: 50,            // Group: flush after N ops (default: 50)
   groupCommitMs: 100,             // Group: flush after N ms (default: 100)
   agentId: "agent-A",             // Enable multi-writer mode (optional)
@@ -165,9 +165,34 @@ await store.flush();
 await store.close();
 ```
 
-**Safety:** Forced to `"immediate"` when `agentId` is set (multi-writer mode). Other agents can't see buffered ops, so group commit is single-writer only.
+### Async Mode
 
-**Tradeoff:** A crash can lose ops that haven't been flushed yet (up to `groupCommitMs` milliseconds of data). Use `"immediate"` (default) when every write must be durable.
+For maximum write throughput, use `writeMode: "async"`. Writes resolve immediately after buffering in memory — no disk I/O on the hot path. ~50x faster than immediate mode.
+
+```typescript
+const store = new Store();
+await store.open("./data", {
+  writeMode: "async",
+  groupCommitSize: 50,
+  groupCommitMs: 100,
+});
+
+await store.set("a", valueA);  // Returns instantly — buffered in memory
+await store.set("b", valueB);  // Same
+
+// Ensure durability before exit
+await store.sync();
+await store.close();
+```
+
+**Crash semantics:** Data buffered since the last flush is **lost** on unclean shutdown. Call `sync()` before process exit for durability. `close()` always flushes.
+
+**Safety:** Forced to `"immediate"` when `agentId` is set (multi-writer mode). Other agents can't see buffered ops, so group/async commit is single-writer only.
+
+**When to use which mode:**
+- `"immediate"` (default) — every write is durable. Use when data loss is unacceptable.
+- `"group"` — writes are batched but caller still waits for flush. ~12x faster. Crash loses up to `groupCommitMs` ms of data.
+- `"async"` — writes return instantly. ~50x faster. Crash loses all unflushed data. Best for high-throughput, latency-sensitive, crash-tolerant workloads.
 
 ## Multi-Writer Mode
 

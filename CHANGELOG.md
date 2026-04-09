@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.1 (2026-04-09)
+
+### Added
+- **Async write mode** — `writeMode: "async"` buffers operations and resolves `set()`/`delete()` immediately without waiting for disk I/O. Background timer and buffer-full triggers handle flushing. ~50x faster than immediate mode for individual writes.
+- **`store.sync()`** — alias for `flush()`. Named shutdown hook for ensuring durability before process exit when using async mode.
+- **Crash semantics**: ops acknowledged but not yet flushed are lost on unclean shutdown. This is opt-in and clearly documented.
+- **Safety**: forced to `"immediate"` mode when `agentId` is set (multi-writer), same as group mode.
+
 ## 0.5.0 (2026-04-09)
 
 ### Added
