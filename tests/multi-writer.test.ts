@@ -451,10 +451,12 @@ describe("Multi-writer", () => {
       await storeA2.close();
     });
 
-    it("throws in single-writer mode", async () => {
+    it("works in single-writer mode (delegates to tail)", async () => {
       const store = new Store<TestRecord>();
       await store.open(tmpDir, { checkpointThreshold: 1000 });
-      await expect(store.refresh()).rejects.toThrow("multi-writer");
+      await store.set("a", { name: "A", status: "active" });
+      // refresh in single-writer mode calls tail() — should not throw
+      await expect(store.refresh()).resolves.toBeUndefined();
       await store.close();
     });
   });

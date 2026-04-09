@@ -117,6 +117,39 @@ describe("WAL tailing", () => {
     expect(callCount).toBe(0);
   });
 
+  it("tail() in multi-writer picks up other agents' writes", async () => {
+    // Close the single-writer store
+    await writer.close();
+
+    // Open two agents on the same directory
+    const agentA = new Store<TestRecord>();
+    await agentA.open(tmpDir, { checkpointThreshold: 1000, agentId: "agent-a" });
+
+    const agentB = new Store<TestRecord>();
+    await agentB.open(tmpDir, { checkpointThreshold: 1000, agentId: "agent-b" });
+
+    // Agent A writes
+    await agentA.set("a", { name: "From A", status: "active" });
+
+    // Agent B tails — should see Agent A's write
+    const newOps = await agentB.tail();
+    expect(newOps.length).toBeGreaterThan(0);
+    expect(agentB.get("a")?.name).toBe("From A");
+
+    await agentB.close();
+    await agentA.close();
+
+    // Reopen writer for afterEach cleanup
+    writer = new Store<TestRecord>();
+    await writer.open(tmpDir, { checkpointThreshold: 1000 });
+  });
+
+  it("refresh() works in both single-writer and multi-writer", async () => {
+    // Single-writer: refresh should not throw
+    await writer.set("x", { name: "X", status: "active" });
+    await expect(writer.refresh()).resolves.toBeUndefined();
+  });
+
   it("close() stops watch automatically", async () => {
     reader = new Store<TestRecord>();
     await reader.open(tmpDir, { readOnly: true });

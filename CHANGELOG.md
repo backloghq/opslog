@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 (2026-04-09)
+
+### Fixed
+- **`tail()` now works in multi-writer mode** — reads ALL agent WAL files via `_refresh()` instead of just the local agent's ops file. Agents can now see each other's writes via `tail()` and `watch()`.
+- **`refresh()` works in any mode** — no longer throws in single-writer mode. Delegates to `tail()` for single-writer, full refresh for multi-writer. Enables readOnly stores to pick up new writes from the writer process.
+
 ## 0.4.0 (2026-04-09)
 
 ### Added
