@@ -17,6 +17,9 @@ export function validateOp<T>(raw: unknown): Operation<T> {
   if (obj.op === "set" && (!("data" in obj) || obj.data === null)) throw new Error("Invalid operation: set op must have non-null data");
   if (obj.op === "delete" && obj.prev === null) throw new Error("Invalid operation: delete op must have non-null prev");
   if (obj.op === "delete" && "data" in obj) throw new Error("Invalid operation: delete op must not have data field");
+  if ("encoding" in obj && obj.encoding !== "full" && obj.encoding !== "delta") {
+    throw new Error(`Invalid operation: encoding must be "full" or "delta", got "${obj.encoding}"`);
+  }
   return raw as Operation<T>;
 }
 

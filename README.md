@@ -131,14 +131,42 @@ await store.open(dir, {
   checkpointOnClose: true,        // Checkpoint when close() is called (default: true)
   version: 1,                     // Schema version
   migrate: (record, fromVersion) => record, // Migration function
+  readOnly: false,                // Open in read-only mode (default: false)
 });
 ```
+
+## Read-Only Mode
+
+Open a store for reading without acquiring the write lock. Useful for dashboards, backup processes, or multiple readers alongside a single writer.
+
+```typescript
+const reader = new Store();
+await reader.open("./data", { readOnly: true });
+
+// All reads work
+const tasks = reader.all();
+const active = reader.filter((t) => t.status === "active");
+
+// All mutations throw
+await reader.set("x", value); // Error: Store is read-only
+```
+
+Read-only stores load the latest snapshot and replay ops on open. They do not checkpoint on close. Multiple read-only stores can open the same directory concurrently alongside one writer.
+
+## Concurrency
+
+All state-mutating operations (`set`, `delete`, `batch`, `undo`, `compact`, `archive`) are serialized through an internal async mutex. This prevents interleaving of concurrent mutations — e.g., `compact()` swapping the ops file while `set()` is appending, or `undo()` truncating while `set()` is writing.
+
+Read operations (`get`, `all`, `filter`, `count`, `has`, `entries`) are synchronous and lock-free.
+
+An advisory directory write lock (`.lock` file with PID) prevents two processes from opening the same store. Stale locks from crashed processes are automatically recovered.
 
 ## Crash Safety
 
 - **Ops file**: append-only writes. A crash mid-append loses at most the last operation. Malformed lines are skipped on recovery.
 - **Snapshots**: immutable. Written to a temp file, then atomically renamed.
 - **Manifest**: atomically replaced via temp-file-rename. Always points to a valid snapshot.
+- **Undo**: uses `ftruncate()` — a single atomic POSIX syscall. O(1) regardless of file size.
 
 No data corruption on crash. At most one in-flight operation is lost.
 

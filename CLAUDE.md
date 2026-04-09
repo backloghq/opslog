@@ -28,8 +28,9 @@ A lightweight storage engine that records every mutation as an operation in an a
 ## Core Properties
 
 - **Crash-safe**: append-only writes can't corrupt existing data. Snapshots are immutable. Manifest is atomically replaced via temp-file-rename.
+- **Concurrency-safe**: async mutation serializer prevents interleaving of concurrent writes. Advisory directory lock prevents multi-process corruption. Read-only mode enables single-writer/multi-reader across processes.
 - **Zero native dependencies**: pure TypeScript, only Node.js fs
-- **Undo built-in**: operations record before/after state
+- **Undo built-in**: operations record before/after state. O(1) ftruncate-based undo.
 - **Sync-ready**: operations are the natural unit for cross-node synchronization
 - **Schema versioned**: operations and snapshots carry version numbers for forward migration
 
@@ -38,11 +39,12 @@ A lightweight storage engine that records every mutation as an operation in an a
 ```
 src/
   types.ts            # Interfaces: Operation, Snapshot, Manifest, StoreOptions
-  wal.ts              # Append-only operation log: append, read, truncate
+  wal.ts              # Append-only operation log: append, read, truncate (ftruncate-based)
   snapshot.ts          # Immutable snapshot: write, load
   manifest.ts          # Manifest management: read, update (atomic)
   archive.ts           # Active/archive split: archive old records, lazy-load
-  store.ts             # Public API: open, get, set, delete, query, undo, compact
+  lock.ts              # Advisory directory write lock: acquire, release, stale recovery
+  store.ts             # Public API: open, get, set, delete, query, undo, compact (with async mutex)
   index.ts             # Exports
 tests/
   wal.test.ts           # WAL append/read/truncate tests

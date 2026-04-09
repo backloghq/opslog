@@ -9,6 +9,8 @@ export interface Operation<T = Record<string, unknown>> {
   data?: T;
   /** Previous value (null for creates, full record for updates/deletes) */
   prev: T | null;
+  /** Encoding format for prev field. Omitted or "full" = full record. "delta" = JSON Patch (future). */
+  encoding?: "full" | "delta";
 }
 
 export interface Snapshot<T = Record<string, unknown>> {
@@ -49,6 +51,8 @@ export interface StoreOptions {
   version?: number;
   /** Migration function: called if stored version < current version */
   migrate?: (record: unknown, fromVersion: number) => unknown;
+  /** Open in read-only mode: skips directory lock, rejects all mutations. */
+  readOnly?: boolean;
 }
 
 export interface StoreStats {

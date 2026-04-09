@@ -1,4 +1,5 @@
 export { Store } from "./store.js";
+export { acquireLock, releaseLock } from "./lock.js";
 export type {
   Operation,
   Snapshot,

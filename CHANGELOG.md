@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.2.0 (2026-04-09)
+
+### Added
+- **Async mutation serializer** — promise-chain mutex serializes all state-mutating operations (`set`, `delete`, `batch`, `undo`, `compact`, `archive`). Prevents interleaving of concurrent async mutations that could corrupt the WAL or in-memory state. Read operations remain synchronous and lock-free.
+- **Advisory directory write lock** — `store.open()` acquires a lockfile (`.lock` with PID). Prevents two processes from opening the same store directory. Stale locks from crashed processes are automatically recovered.
+- **Read-only mode** — `store.open(dir, { readOnly: true })` opens the store without acquiring the directory lock. All reads work (get, all, filter, count, has, entries, getHistory, getOps). All mutations are rejected with a descriptive error. Enables single-writer/multi-reader across processes.
+- **Delta encoding format field** — `Operation` type now accepts an optional `encoding` field (`"full"` | `"delta"`). Currently only `"full"` is used. Prepares the format for future delta-encoded `prev` fields without requiring a migration.
+
+### Changed
+- **`truncateLastOp` rewritten with `ftruncate()`** — O(1) instead of O(n). Reads max 4KB from the end of the file to find the truncation point, then truncates via atomic POSIX syscall. Handles operations larger than 4KB by reading in chunks.
+
 ## 0.1.4 (2026-04-07)
 
 ### Fixed
