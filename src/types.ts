@@ -63,6 +63,12 @@ export interface StoreOptions {
   backend?: StorageBackend;
   /** Agent ID for multi-writer mode. Enables per-agent WAL streams and LWW conflict resolution. */
   agentId?: string;
+  /** Write mode: "immediate" flushes every op (default, safe for multi-writer). "group" buffers ops and flushes periodically (~50x faster writes). Forced to "immediate" when agentId is set. */
+  writeMode?: "immediate" | "group";
+  /** Group commit: max ops to buffer before flush (default: 50). Only used when writeMode is "group". */
+  groupCommitSize?: number;
+  /** Group commit: max milliseconds before flush (default: 100). Only used when writeMode is "group". */
+  groupCommitMs?: number;
 }
 
 export interface StoreStats {

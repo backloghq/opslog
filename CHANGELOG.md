@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0 (2026-04-09)
+
+### Added
+- **Group commit mode** — `writeMode: "group"` buffers operations in memory and flushes periodically (single disk write per batch). ~12x faster than immediate mode for sustained writes. Configurable via `groupCommitSize` (default 50) and `groupCommitMs` (default 100ms).
+- **`store.flush()`** — explicitly flush the group commit buffer to disk.
+- Automatic flush on `close()`, `compact()`, and when buffer reaches size threshold.
+- Timer-based flush: even with few ops, buffer is written within `groupCommitMs` milliseconds.
+- **Safety**: forced to `"immediate"` mode when `agentId` is set (multi-writer). Logs a warning if user tries `"group"` with multi-writer.
+
 ## 0.4.1 (2026-04-09)
 
 ### Fixed

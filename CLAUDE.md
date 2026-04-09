@@ -30,6 +30,10 @@ A lightweight storage engine that records every mutation as an operation in an a
 
 All I/O goes through the `StorageBackend` interface. `FsBackend` (filesystem) is the default. Custom backends can be passed via `StoreOptions.backend`.
 
+### Group Commit
+
+`writeMode: "group"` buffers ops in memory and flushes as a single disk write (~12x faster). Configurable via `groupCommitSize` (default 50) and `groupCommitMs` (default 100). Forced to `"immediate"` when `agentId` is set (multi-writer safety). `store.flush()` for explicit flush. Buffer flushed on `close()` and `compact()`.
+
 ### Multi-Writer Concurrency
 
 When `StoreOptions.agentId` is set, the store operates in multi-writer mode:
