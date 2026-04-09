@@ -9,6 +9,8 @@ import type {
 import { createDefaultManifest } from "./manifest.js";
 import { FsBackend } from "./backend.js";
 import { LamportClock } from "./clock.js";
+import { createDelta, applyDelta, isDeltaSmaller } from "./delta.js";
+import type { DeltaPatch } from "./delta.js";
 
 /** Core option keys that have defaults. */
 interface CoreOptions {
@@ -240,6 +242,7 @@ export class Store<T = Record<string, unknown>> {
 
   async close(): Promise<void> {
     this.ensureOpen();
+    this.unwatch();
     if (
       !this.coreOpts.readOnly &&
       this.coreOpts.checkpointOnClose &&
@@ -391,6 +394,65 @@ export class Store<T = Record<string, unknown>> {
     return this.serialize(() => this._refresh());
   }
 
+  // --- WAL tailing ---
+
+  private watchTimer: ReturnType<typeof setInterval> | null = null;
+  private watchCallback: ((ops: Operation<T>[]) => void) | null = null;
+
+  /**
+   * Tail the WAL for new operations. Re-reads the active ops file
+   * and replays any new operations since the last known count.
+   * Returns the newly applied operations.
+   * Works in any mode (single-writer readOnly, multi-writer, etc).
+   */
+  async tail(): Promise<Operation<T>[]> {
+    this.ensureOpen();
+    const prevCount = this.ops.length;
+
+    // Re-read the ops file for new entries
+    const allOps = (await this.backend.readOps(this.activeOpsPath)) as Operation<T>[];
+    if (allOps.length <= prevCount) return [];
+
+    const newOps = allOps.slice(prevCount);
+    for (const op of newOps) {
+      this.applyOp(op);
+    }
+    this.ops.push(...newOps);
+
+    return newOps;
+  }
+
+  /**
+   * Watch for new operations on an interval.
+   * Calls the callback with new operations whenever they appear.
+   * @param callback Called with new operations
+   * @param intervalMs Polling interval in milliseconds (default: 1000)
+   */
+  watch(callback: (ops: Operation<T>[]) => void, intervalMs = 1000): void {
+    this.ensureOpen();
+    if (this.watchTimer) this.unwatch();
+    this.watchCallback = callback;
+    this.watchTimer = setInterval(async () => {
+      try {
+        const newOps = await this.tail();
+        if (newOps.length > 0 && this.watchCallback) {
+          this.watchCallback(newOps);
+        }
+      } catch {
+        // Silently ignore tail errors during watch
+      }
+    }, intervalMs);
+  }
+
+  /** Stop watching for new operations. */
+  unwatch(): void {
+    if (this.watchTimer) {
+      clearInterval(this.watchTimer);
+      this.watchTimer = null;
+    }
+    this.watchCallback = null;
+  }
+
   // --- Private mutation implementations ---
 
   private makeOp(
@@ -410,6 +472,19 @@ export class Store<T = Record<string, unknown>> {
       op.agent = this.agentId;
       op.clock = this.clock!.tick();
     }
+
+    // Try delta encoding for updates (not creates or deletes)
+    if (type === "set" && prev !== null && data !== undefined) {
+      const delta = createDelta(
+        prev as Record<string, unknown>,
+        data as Record<string, unknown>,
+      );
+      if (delta && isDeltaSmaller(delta, prev as Record<string, unknown>)) {
+        op.prev = delta as unknown as T;
+        op.encoding = "delta";
+      }
+    }
+
     return op;
   }
 
@@ -692,10 +767,23 @@ export class Store<T = Record<string, unknown>> {
 
   private reverseOp(op: Operation<T>): void {
     if (op.prev === null) {
+      // Was a create — reverse by deleting
       this.records.delete(op.id);
+    } else if (op.encoding === "delta") {
+      // Delta-encoded: apply the reverse patch to the current record
+      const current = this.records.get(op.id);
+      if (current) {
+        const restored = applyDelta(
+          current as Record<string, unknown>,
+          op.prev as unknown as DeltaPatch,
+        );
+        this.records.set(op.id, restored as T);
+      }
     } else if (op.op === "delete") {
+      // Was a delete — reverse by restoring full prev
       this.records.set(op.id, op.prev);
     } else {
+      // Was an update — reverse by restoring full prev
       this.records.set(op.id, op.prev);
     }
   }

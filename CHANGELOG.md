@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0 (2026-04-09)
+
+### Added
+- **WAL tailing** — `store.tail()` reads new operations from the WAL since the last known position. Returns newly applied operations. Works in any mode (readOnly, multi-writer). Enables cross-process live updates without reopening.
+- **Watch mode** — `store.watch(callback, intervalMs)` polls for new ops on an interval and calls the callback. `store.unwatch()` stops polling. `close()` auto-unwatches.
+- **Delta encoding** — update operations automatically use delta encoding when the patch is smaller than the full `prev` record. Stores `{$set: {...}, $unset: [...]}` instead of the full previous record. `encoding: "delta"` field on the operation. Undo correctly applies reverse patches. Massive space savings for single-field updates on large records.
+- **Delta utilities** — exported `createDelta()`, `applyDelta()`, `isDeltaSmaller()` functions and `DeltaPatch` type.
+
 ## 0.3.0 (2026-04-09)
 
 ### Added
