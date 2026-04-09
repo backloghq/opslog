@@ -1,6 +1,6 @@
 # opslog
 
-Embedded event-sourced document store for Node.js. Append-only operation log with immutable snapshots, zero native dependencies.
+Embedded event-sourced document store for Node.js. Append-only operation log with immutable snapshots, zero native dependencies. Supports pluggable storage backends and multi-writer concurrency.
 
 ## What It Is
 
@@ -10,45 +10,67 @@ A lightweight storage engine that records every mutation as an operation in an a
 
 ```
 <data-dir>/
-  manifest.json                 # Points to current snapshot + active ops file
+  manifest.json                       # Points to current snapshot + active ops file(s)
   snapshots/
-    snap-<timestamp>.json       # Immutable full-state captures
+    snap-<timestamp>.json             # Immutable full-state captures
   ops/
-    ops-<timestamp>.jsonl       # Append-only operation log (one JSON per line)
+    ops-<timestamp>.jsonl             # Single-writer operation log (one JSON per line)
+    agent-<id>-<timestamp>.jsonl      # Per-agent operation log (multi-writer mode)
   archive/
-    <period>.json               # Archived records (lazy-loaded)
+    <period>.json                     # Archived records (lazy-loaded)
 ```
 
-- **Writes**: append operation to the active JSONL file
+- **Writes**: append operation to the active JSONL file (per-agent in multi-writer mode)
 - **Reads**: load latest snapshot into memory, replay ops on top
 - **Checkpoint**: materialize current state as new immutable snapshot, start new ops file
-- **Undo**: pop last operation(s), apply previous values
+- **Undo**: single-writer: O(1) ftruncate. Multi-writer: undo agent's own last op, re-derive state
 - **Archive**: move old/inactive records out of the active set
+
+### Storage Backend
+
+All I/O goes through the `StorageBackend` interface. `FsBackend` (filesystem) is the default. Custom backends can be passed via `StoreOptions.backend`.
+
+### Multi-Writer Concurrency
+
+When `StoreOptions.agentId` is set, the store operates in multi-writer mode:
+- Each agent writes to its own WAL file (no write contention)
+- Operations carry Lamport clock timestamps for global ordering
+- On open/refresh, all agent WALs are merge-sorted by `(clock, agentId)`
+- Conflicts resolved via last-writer-wins (higher clock wins, ties by agentId)
+- Compaction uses a separate lock; other agents detect manifest changes
 
 ## Core Properties
 
 - **Crash-safe**: append-only writes can't corrupt existing data. Snapshots are immutable. Manifest is atomically replaced via temp-file-rename.
-- **Concurrency-safe**: async mutation serializer prevents interleaving of concurrent writes. Advisory directory lock prevents multi-process corruption. Read-only mode enables single-writer/multi-reader across processes.
+- **Concurrency-safe**: async mutation serializer prevents interleaving of concurrent writes. Single-writer: advisory directory lock. Multi-writer: per-agent WALs with Lamport clocks.
 - **Zero native dependencies**: pure TypeScript, only Node.js fs
-- **Undo built-in**: operations record before/after state. O(1) ftruncate-based undo.
+- **Undo built-in**: operations record before/after state
 - **Sync-ready**: operations are the natural unit for cross-node synchronization
 - **Schema versioned**: operations and snapshots carry version numbers for forward migration
+- **Pluggable storage**: `StorageBackend` interface for filesystem, S3, or custom backends
 
 ## Project Structure
 
 ```
 src/
-  types.ts            # Interfaces: Operation, Snapshot, Manifest, StoreOptions
+  types.ts            # Interfaces: Operation, Snapshot, Manifest, StorageBackend, StoreOptions
+  backend.ts          # FsBackend: filesystem StorageBackend implementation
+  clock.ts            # LamportClock: logical clock for multi-writer ordering
   wal.ts              # Append-only operation log: append, read, truncate (ftruncate-based)
-  snapshot.ts          # Immutable snapshot: write, load
-  manifest.ts          # Manifest management: read, update (atomic)
-  archive.ts           # Active/archive split: archive old records, lazy-load
-  lock.ts              # Advisory directory write lock: acquire, release, stale recovery
-  store.ts             # Public API: open, get, set, delete, query, undo, compact (with async mutex)
-  index.ts             # Exports
+  snapshot.ts         # Immutable snapshot: write, load
+  manifest.ts         # Manifest management: read, update (atomic)
+  archive.ts          # Active/archive split: archive old records, lazy-load
+  lock.ts             # Advisory directory write lock: acquire, release, stale recovery
+  store.ts            # Public API: open, get, set, delete, query, undo, compact, refresh
+  validate.ts         # Runtime validators for all parsed JSON
+  index.ts            # Exports
 tests/
-  wal.test.ts           # WAL append/read/truncate tests
-  store.test.ts         # All store operations, batch, undo, archive, corruption recovery
+  store.test.ts       # All store operations, batch, undo, archive, corruption recovery
+  wal.test.ts         # WAL append/read/truncate tests
+  lock.test.ts        # Advisory lock tests
+  backend.test.ts     # FsBackend unit tests
+  clock.test.ts       # LamportClock tests
+  multi-writer.test.ts # Multi-writer: concurrent agents, LWW, undo, compaction, refresh
 ```
 
 ## Public API
@@ -84,6 +106,9 @@ interface Store<T> {
   loadArchive(segment: string): Promise<Map<string, T>>;
   listArchiveSegments(): string[];
   stats(): StoreStats;
+
+  // Multi-writer
+  refresh(): Promise<void>;  // Reload from all agent WALs (multi-writer only)
 }
 ```
 
@@ -95,6 +120,7 @@ interface Store<T> {
 - JSON format for snapshots and manifest
 - All async operations return Promises
 - Comprehensive error handling — never corrupt data on error
+- All I/O routed through StorageBackend interface (Store has no direct fs imports)
 - Tests use temp directories, cleaned up after each test
 
 ## Release Process

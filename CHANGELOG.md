@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.3.0 (2026-04-09)
+
+### Added
+- **Pluggable storage backend** — new `StorageBackend` interface decouples all I/O from the Store class. `FsBackend` (filesystem, default) ships built-in. Custom backends (S3, etc.) can be passed via `StoreOptions.backend`. The public API is fully backward compatible — `new Store().open(dir)` works exactly as before.
+- **Multi-writer concurrency** — multiple agents can write to the same store from different processes/machines. Enable with `StoreOptions.agentId`. Each agent gets its own WAL file (`ops/agent-{id}-{ts}.jsonl`), eliminating write contention.
+  - **Lamport clock** — operations carry a logical clock for deterministic ordering across agents. Exported as `LamportClock` class.
+  - **Last-writer-wins conflict resolution** — when agents write to the same key, the operation with the higher clock wins. Ties broken by agent ID (lexicographic).
+  - **Merge-sort replay** — on `open()`, all agent WAL files are read and merge-sorted by `(clock, agentId)` for a deterministic total order.
+  - **Per-agent undo** — `undo()` removes only the calling agent's last operation. Other agents' ops are unaffected.
+  - **Cooperative compaction** — agents acquire a compaction lock before checkpointing. After compaction, other agents detect the manifest change and start fresh WAL files.
+  - **`store.refresh()`** — manually reload state from all agent WAL files (multi-writer mode only).
+- **New exports** — `FsBackend`, `LamportClock`, `StorageBackend` (type), `LockHandle` (type).
+- **Operation type extended** — optional `agent` (string) and `clock` (number) fields for multi-writer mode. Single-writer operations omit these fields for backward compatibility.
+- **Manifest type extended** — optional `activeAgentOps` (Record<string, string>) maps agent IDs to their ops file paths.
+
+### Changed
+- **Store internals refactored** — all filesystem I/O routed through `StorageBackend` interface. Store no longer imports `node:fs` directly.
+- **`StoreOptions` extended** — new optional fields: `backend` (StorageBackend), `agentId` (string).
+
 ## 0.2.0 (2026-04-09)
 
 ### Added
