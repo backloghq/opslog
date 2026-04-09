@@ -54,13 +54,14 @@ State survives restarts — reopen the same directory and everything is there.
 
 ```
 data/
-  manifest.json              # Points to current snapshot + ops file
+  manifest.json                    # Points to current snapshot + ops file(s)
   snapshots/
-    snap-<timestamp>.json    # Immutable full-state capture
+    snap-<timestamp>.json          # Immutable full-state capture
   ops/
-    ops-<timestamp>.jsonl    # Append-only operation log
+    ops-<timestamp>.jsonl          # Append-only operation log (single-writer)
+    agent-<id>-<timestamp>.jsonl   # Per-agent operation log (multi-writer)
   archive/
-    archive-<period>.json    # Old records, lazy-loaded
+    archive-<period>.json          # Old records, lazy-loaded
 ```
 
 **Writes** append an operation (one JSON line) to the ops file. **Reads** come from an in-memory map built from the latest snapshot + ops replay. **Checkpoints** materialize current state as a new immutable snapshot.
@@ -121,6 +122,7 @@ await store.archive(predicate)    // Move matching records to archive
 await store.loadArchive(segment)  // Lazy-load archived records
 store.listArchiveSegments()       // List available archive files
 store.stats()                     // { activeRecords, opsCount, archiveSegments }
+await store.refresh()             // Reload from all agent WALs (multi-writer only)
 ```
 
 ## Options
@@ -132,7 +134,78 @@ await store.open(dir, {
   version: 1,                     // Schema version
   migrate: (record, fromVersion) => record, // Migration function
   readOnly: false,                // Open in read-only mode (default: false)
+  agentId: "agent-A",             // Enable multi-writer mode (optional)
+  backend: new FsBackend(),       // Custom storage backend (optional, default: FsBackend)
 });
+```
+
+## Multi-Writer Mode
+
+Multiple agents can write to the same store concurrently. Each agent gets its own WAL file — no write contention.
+
+```typescript
+// Agent A (process 1 / machine 1)
+const storeA = new Store<Task>();
+await storeA.open("./data", { agentId: "agent-A" });
+await storeA.set("task-1", { title: "Build API", status: "active" });
+await storeA.close();
+
+// Agent B (process 2 / machine 2)
+const storeB = new Store<Task>();
+await storeB.open("./data", { agentId: "agent-B" });
+// B sees A's writes on open
+storeB.get("task-1"); // { title: "Build API", status: "active" }
+await storeB.set("task-2", { title: "Write tests", status: "active" });
+await storeB.close();
+```
+
+### How it works
+
+- Each agent writes to `ops/agent-{id}-{timestamp}.jsonl` — separate files, no locking needed for writes
+- Operations carry a [Lamport clock](https://en.wikipedia.org/wiki/Lamport_timestamp) for ordering
+- On `open()`, all agent WAL files are merge-sorted by `(clock, agentId)` for a deterministic total order
+- Conflicts (two agents write the same key) are resolved with **last-writer-wins** by clock value
+- `undo()` only undoes the calling agent's last operation
+- `compact()` acquires a compaction lock, snapshots the merged state, and resets all WAL files
+- `refresh()` re-reads all agent WALs to pick up other agents' writes
+
+### Conflict resolution
+
+When two agents modify the same key, the operation with the higher Lamport clock wins. If clocks are equal, the lexicographically higher agent ID wins. This is deterministic — all agents arrive at the same state regardless of replay order.
+
+```typescript
+// Agent A sets "shared" (clock=1)
+await storeA.set("shared", { value: "from-A" });
+
+// Agent B opens (sees clock=1), sets "shared" (clock=2)
+await storeB.set("shared", { value: "from-B" });
+
+// B wins — higher clock
+store.get("shared"); // { value: "from-B" }
+```
+
+## Custom Storage Backend
+
+opslog uses a pluggable `StorageBackend` interface for all I/O. The default is `FsBackend` (local filesystem). You can implement your own backend for S3, databases, or other storage systems.
+
+```typescript
+import { Store, FsBackend } from "@backloghq/opslog";
+import type { StorageBackend } from "@backloghq/opslog";
+
+// Use the default filesystem backend (implicit)
+const store = new Store();
+await store.open("./data");
+
+// Or pass a custom backend explicitly
+const store = new Store();
+await store.open("./data", { backend: new FsBackend() });
+
+// Or implement your own
+class S3Backend implements StorageBackend {
+  // ... implement all methods
+}
+const store = new Store();
+await store.open("s3://bucket/prefix", { backend: new S3Backend() });
 ```
 
 ## Read-Only Mode

@@ -1,19 +1,23 @@
-import { mkdir, writeFile } from "node:fs/promises";
-import type { FileHandle } from "node:fs/promises";
-import { join } from "node:path";
-import type { Operation, StoreOptions, StoreStats } from "./types.js";
-import { appendOp, appendOps, readOps, truncateLastOp } from "./wal.js";
-import { loadSnapshot, writeSnapshot } from "./snapshot.js";
-import {
-  createDefaultManifest,
-  readManifest,
-  writeManifest,
-} from "./manifest.js";
-import {
-  loadArchiveSegment,
-  writeArchiveSegment,
-} from "./archive.js";
-import { acquireLock, releaseLock } from "./lock.js";
+import type {
+  LockHandle,
+  Manifest,
+  Operation,
+  StorageBackend,
+  StoreOptions,
+  StoreStats,
+} from "./types.js";
+import { createDefaultManifest } from "./manifest.js";
+import { FsBackend } from "./backend.js";
+import { LamportClock } from "./clock.js";
+
+/** Core option keys that have defaults. */
+interface CoreOptions {
+  checkpointThreshold: number;
+  checkpointOnClose: boolean;
+  version: number;
+  migrate: (record: unknown, fromVersion: number) => unknown;
+  readOnly: boolean;
+}
 
 export class Store<T = Record<string, unknown>> {
   private dir = "";
@@ -24,7 +28,7 @@ export class Store<T = Record<string, unknown>> {
   private version = 1;
   private activeOpsPath = "";
   private created = "";
-  private options: Required<StoreOptions> = {
+  private coreOpts: CoreOptions = {
     checkpointThreshold: 100,
     checkpointOnClose: true,
     version: 1,
@@ -35,13 +39,17 @@ export class Store<T = Record<string, unknown>> {
   private batching = false;
   private batchOps: Operation<T>[] = [];
   private _lock: Promise<void> = Promise.resolve();
-  private lockFh: FileHandle | null = null;
+  private lockHandle: LockHandle | null = null;
+  private backend!: StorageBackend;
+
+  // Multi-writer state
+  private agentId?: string;
+  private clock: LamportClock | null = null;
+  private manifestVersion: string | null = null;
 
   /**
    * Serialize all state-mutating operations through a promise chain.
-   * This prevents interleaving of async mutations (e.g. compact + set,
-   * undo + set) which could corrupt the WAL or in-memory state.
-   * Read operations remain synchronous and lock-free.
+   * Prevents interleaving of async mutations. Reads remain synchronous and lock-free.
    */
   private serialize<R>(fn: () => Promise<R>): Promise<R> {
     const prev = this._lock;
@@ -52,87 +60,198 @@ export class Store<T = Record<string, unknown>> {
     return prev.then(fn).finally(() => resolve());
   }
 
+  private isMultiWriter(): boolean {
+    return this.agentId !== undefined;
+  }
+
   async open(dir: string, options?: StoreOptions): Promise<void> {
     this.dir = dir;
     if (options) {
-      this.options = { ...this.options, ...options };
+      const { backend, agentId, ...rest } = options;
+      this.coreOpts = { ...this.coreOpts, ...rest };
+      if (backend) this.backend = backend;
+      if (agentId) this.agentId = agentId;
+    }
+    this.backend ??= new FsBackend();
+
+    await this.backend.initialize(dir, { readOnly: this.coreOpts.readOnly });
+
+    // Acquire write lock (single-writer only, not readOnly)
+    if (!this.coreOpts.readOnly && !this.isMultiWriter()) {
+      this.lockHandle = await this.backend.acquireLock();
     }
 
-    if (!this.options.readOnly) {
-      await mkdir(join(dir, "snapshots"), { recursive: true });
-      await mkdir(join(dir, "ops"), { recursive: true });
-      await mkdir(join(dir, "archive"), { recursive: true });
-      this.lockFh = await acquireLock(dir);
-    }
-
-    const manifest = await readManifest(dir);
+    const manifest = await this.backend.readManifest();
 
     if (!manifest) {
-      if (this.options.readOnly) {
-        throw new Error("Cannot open in readOnly mode: no existing store found");
+      if (this.coreOpts.readOnly) {
+        throw new Error(
+          "Cannot open in readOnly mode: no existing store found",
+        );
       }
-      // Fresh store — create empty snapshot and manifest
-      const snapshotPath = await writeSnapshot(dir, new Map(), this.options.version);
-      const opsFilename = `ops-${Date.now()}.jsonl`;
-      const opsPath = `ops/${opsFilename}`;
-      await writeFile(join(dir, opsPath), "", "utf-8");
-      const newManifest = createDefaultManifest(snapshotPath, opsPath);
-      await writeManifest(dir, newManifest);
-      this.version = this.options.version;
-      this.activeOpsPath = opsPath;
-      this.created = newManifest.stats.created;
-      this.archiveSegments = [];
+      await this.initFreshStore();
     } else {
-      // Load existing state
-      let snapshotData: { records: Map<string, T>; version: number };
-      try {
-        snapshotData = await loadSnapshot<T>(dir, manifest.currentSnapshot);
-      } catch (err) {
-        const isNotFound = err instanceof Error && "code" in err && (err as NodeJS.ErrnoException).code === "ENOENT";
-        if (isNotFound) {
-          throw new Error(`Snapshot file not found: ${manifest.currentSnapshot}. The data directory may be corrupted.`, { cause: err });
-        }
-        throw err;
-      }
-      const { records, version: storedVersion } = snapshotData;
-      this.records = records;
-      this.version = storedVersion;
-      this.activeOpsPath = manifest.activeOps;
-      this.created = manifest.stats.created;
-      this.archiveSegments = manifest.archiveSegments;
-      this.archivedRecordCount = manifest.stats.archivedRecords;
+      await this.loadExistingStore(manifest);
+    }
 
-      // Migrate if needed
-      if (storedVersion < this.options.version) {
-        for (const [id, record] of this.records) {
-          this.records.set(
-            id,
-            this.options.migrate(record, storedVersion) as T,
-          );
-        }
-        this.version = this.options.version;
-      }
+    this.manifestVersion = await this.backend.getManifestVersion();
+    this.opened = true;
+  }
 
-      // Replay ops
-      const ops = await readOps<T>(join(dir, manifest.activeOps));
+  private async initFreshStore(): Promise<void> {
+    const snapshotPath = await this.backend.writeSnapshot(
+      new Map(),
+      this.coreOpts.version,
+    );
+
+    let opsPath: string;
+    if (this.isMultiWriter()) {
+      opsPath = await this.backend.createAgentOpsFile(this.agentId!);
+    } else {
+      opsPath = await this.backend.createOpsFile();
+    }
+
+    const newManifest = createDefaultManifest(snapshotPath, opsPath);
+    if (this.isMultiWriter()) {
+      newManifest.activeAgentOps = { [this.agentId!]: opsPath };
+    }
+    await this.backend.writeManifest(newManifest);
+
+    this.version = this.coreOpts.version;
+    this.activeOpsPath = opsPath;
+    this.created = newManifest.stats.created;
+    this.archiveSegments = [];
+
+    if (this.isMultiWriter()) {
+      this.clock = new LamportClock(0);
+    }
+  }
+
+  private async loadExistingStore(manifest: Manifest): Promise<void> {
+    // Load snapshot
+    let snapshotData: { records: Map<string, unknown>; version: number };
+    try {
+      snapshotData = await this.backend.loadSnapshot(
+        manifest.currentSnapshot,
+      );
+    } catch (err) {
+      const isNotFound =
+        err instanceof Error &&
+        "code" in err &&
+        (err as NodeJS.ErrnoException).code === "ENOENT";
+      if (isNotFound) {
+        throw new Error(
+          `Snapshot file not found: ${manifest.currentSnapshot}. The data directory may be corrupted.`,
+          { cause: err },
+        );
+      }
+      throw err;
+    }
+
+    const { records, version: storedVersion } = snapshotData;
+    this.records = records as Map<string, T>;
+    this.version = storedVersion;
+    this.created = manifest.stats.created;
+    this.archiveSegments = manifest.archiveSegments;
+    this.archivedRecordCount = manifest.stats.archivedRecords;
+
+    // Migrate if needed
+    if (storedVersion < this.coreOpts.version) {
+      for (const [id, record] of this.records) {
+        this.records.set(
+          id,
+          this.coreOpts.migrate(record, storedVersion) as T,
+        );
+      }
+      this.version = this.coreOpts.version;
+    }
+
+    if (this.isMultiWriter()) {
+      await this.loadMultiWriterOps(manifest);
+    } else {
+      // Single-writer: replay ops from active ops file
+      const ops = (await this.backend.readOps(
+        manifest.activeOps,
+      )) as Operation<T>[];
       for (const op of ops) {
         this.applyOp(op);
       }
       this.ops = ops;
+      this.activeOpsPath = manifest.activeOps;
+    }
+  }
+
+  private async loadMultiWriterOps(manifest: Manifest): Promise<void> {
+    const allOps: Operation<T>[] = [];
+
+    // Read all agent ops files
+    if (manifest.activeAgentOps) {
+      for (const opsPath of Object.values(manifest.activeAgentOps)) {
+        const ops = (await this.backend.readOps(opsPath)) as Operation<T>[];
+        allOps.push(...ops);
+      }
     }
 
-    this.opened = true;
+    // Also read legacy single-writer ops for backward compat
+    if (manifest.activeOps && !manifest.activeAgentOps) {
+      const ops = (await this.backend.readOps(
+        manifest.activeOps,
+      )) as Operation<T>[];
+      allOps.push(...ops);
+    }
+
+    // Merge-sort by (clock, agent) for deterministic total order
+    allOps.sort((a, b) => {
+      const clockDiff = (a.clock ?? 0) - (b.clock ?? 0);
+      if (clockDiff !== 0) return clockDiff;
+      return (a.agent ?? "").localeCompare(b.agent ?? "");
+    });
+
+    for (const op of allOps) {
+      this.applyOp(op);
+    }
+    this.ops = allOps;
+
+    // Initialize Lamport clock from max seen value
+    const maxClock = allOps.reduce(
+      (max, op) => Math.max(max, op.clock ?? 0),
+      0,
+    );
+    this.clock = new LamportClock(maxClock);
+
+    // Find or create our agent's ops file
+    if (manifest.activeAgentOps?.[this.agentId!]) {
+      this.activeOpsPath = manifest.activeAgentOps[this.agentId!];
+    } else {
+      // Register this agent in the manifest
+      this.activeOpsPath = await this.backend.createAgentOpsFile(
+        this.agentId!,
+      );
+      const updatedManifest: Manifest = {
+        ...manifest,
+        activeAgentOps: {
+          ...(manifest.activeAgentOps ?? {}),
+          [this.agentId!]: this.activeOpsPath,
+        },
+      };
+      await this.backend.writeManifest(updatedManifest);
+    }
   }
 
   async close(): Promise<void> {
     this.ensureOpen();
-    if (!this.options.readOnly && this.options.checkpointOnClose && this.ops.length > 0) {
+    if (
+      !this.coreOpts.readOnly &&
+      this.coreOpts.checkpointOnClose &&
+      this.ops.length > 0
+    ) {
       await this.serialize(() => this._compact());
     }
-    if (this.lockFh) {
-      await releaseLock(this.dir, this.lockFh);
-      this.lockFh = null;
+    if (this.lockHandle) {
+      await this.backend.releaseLock(this.lockHandle);
+      this.lockHandle = null;
     }
+    await this.backend.shutdown();
     this.opened = false;
   }
 
@@ -240,9 +359,14 @@ export class Store<T = Record<string, unknown>> {
 
   async loadArchive(segment: string): Promise<Map<string, T>> {
     this.ensureOpen();
-    const segmentPath = this.archiveSegments.find((s) => s === `archive/archive-${segment}.json`) || this.archiveSegments.find((s) => s.includes(segment));
+    const segmentPath =
+      this.archiveSegments.find(
+        (s) => s === `archive/archive-${segment}.json`,
+      ) || this.archiveSegments.find((s) => s.includes(segment));
     if (!segmentPath) throw new Error(`Archive segment '${segment}' not found`);
-    return loadArchiveSegment(this.dir, segmentPath);
+    return this.backend.loadArchiveSegment(segmentPath) as Promise<
+      Map<string, T>
+    >;
   }
 
   stats(): StoreStats {
@@ -254,30 +378,51 @@ export class Store<T = Record<string, unknown>> {
     };
   }
 
+  /**
+   * Reload state from the backend (multi-writer mode).
+   * Re-reads the manifest, snapshot, and all agent WAL files.
+   * Use this to pick up writes from other agents.
+   */
+  async refresh(): Promise<void> {
+    this.ensureOpen();
+    if (!this.isMultiWriter()) {
+      throw new Error("refresh() is only available in multi-writer mode");
+    }
+    return this.serialize(() => this._refresh());
+  }
+
   // --- Private mutation implementations ---
+
+  private makeOp(
+    type: "set" | "delete",
+    id: string,
+    data: T | undefined,
+    prev: T | null,
+  ): Operation<T> {
+    const op: Operation<T> = {
+      ts: new Date().toISOString(),
+      op: type,
+      id,
+      prev,
+    };
+    if (type === "set") op.data = data;
+    if (this.agentId) {
+      op.agent = this.agentId;
+      op.clock = this.clock!.tick();
+    }
+    return op;
+  }
 
   private async _set(id: string, value: T): Promise<void> {
     const prev = this.records.get(id) ?? null;
-    const op: Operation<T> = {
-      ts: new Date().toISOString(),
-      op: "set",
-      id,
-      data: value,
-      prev,
-    };
+    const op = this.makeOp("set", id, value, prev);
     this.records.set(id, value);
     await this.persistOp(op);
   }
 
   private _setSync(id: string, value: T): void {
     const prev = this.records.get(id) ?? null;
-    const op: Operation<T> = {
-      ts: new Date().toISOString(),
-      op: "set",
-      id,
-      data: value,
-      prev,
-    };
+    const op = this.makeOp("set", id, value, prev);
     this.records.set(id, value);
     this.batchOps.push(op);
   }
@@ -287,12 +432,7 @@ export class Store<T = Record<string, unknown>> {
     if (prev === undefined) {
       throw new Error(`Record '${id}' not found`);
     }
-    const op: Operation<T> = {
-      ts: new Date().toISOString(),
-      op: "delete",
-      id,
-      prev,
-    };
+    const op = this.makeOp("delete", id, undefined, prev);
     this.records.delete(id);
     await this.persistOp(op);
   }
@@ -302,12 +442,7 @@ export class Store<T = Record<string, unknown>> {
     if (prev === undefined) {
       throw new Error(`Record '${id}' not found`);
     }
-    const op: Operation<T> = {
-      ts: new Date().toISOString(),
-      op: "delete",
-      id,
-      prev,
-    };
+    const op = this.makeOp("delete", id, undefined, prev);
     this.records.delete(id);
     this.batchOps.push(op);
   }
@@ -317,21 +452,26 @@ export class Store<T = Record<string, unknown>> {
     this.batchOps = [];
     try {
       fn();
-      // Empty batches are no-ops — no I/O if fn() didn't call set/delete
       if (this.batchOps.length > 0) {
-        await appendOps(join(this.dir, this.activeOpsPath), this.batchOps);
+        await this.backend.appendOps(
+          this.activeOpsPath,
+          this.batchOps as Operation[],
+        );
         this.ops.push(...this.batchOps);
-        if (this.ops.length >= this.options.checkpointThreshold) {
+        if (this.ops.length >= this.coreOpts.checkpointThreshold) {
           await this._compact();
         }
       }
     } catch (err) {
-      // Rollback in-memory changes on failure
       for (const op of this.batchOps.reverse()) {
         try {
           this.reverseOp(op);
         } catch (rollbackErr) {
-          console.error("opslog: rollback failed for op", op.id, rollbackErr);
+          console.error(
+            "opslog: rollback failed for op",
+            op.id,
+            rollbackErr,
+          );
         }
       }
       throw err;
@@ -342,24 +482,46 @@ export class Store<T = Record<string, unknown>> {
   }
 
   private async _undo(): Promise<boolean> {
-    if (this.ops.length === 0) return false;
+    if (this.isMultiWriter()) {
+      return this._undoMultiWriter();
+    }
 
+    // Single-writer: O(1) undo
+    if (this.ops.length === 0) return false;
     const lastOp = this.ops[this.ops.length - 1];
     this.reverseOp(lastOp);
     this.ops.pop();
+    await this.backend.truncateLastOp(this.activeOpsPath);
+    return true;
+  }
 
-    await truncateLastOp(join(this.dir, this.activeOpsPath));
+  private async _undoMultiWriter(): Promise<boolean> {
+    // Find last op from this agent
+    const myOps = this.ops.filter((op) => op.agent === this.agentId);
+    if (myOps.length === 0) return false;
 
+    // Truncate our WAL file
+    await this.backend.truncateLastOp(this.activeOpsPath);
+
+    // Re-derive state from scratch (correct but O(n))
+    await this._refresh();
     return true;
   }
 
   private async _compact(): Promise<void> {
-    const snapshotPath = await writeSnapshot(this.dir, this.records, this.version);
-    const opsFilename = `ops-${Date.now()}.jsonl`;
-    const opsPath = `ops/${opsFilename}`;
-    await writeFile(join(this.dir, opsPath), "", "utf-8");
+    if (this.isMultiWriter()) {
+      await this._compactMultiWriter();
+      return;
+    }
 
-    const updatedManifest = {
+    // Single-writer compaction
+    const snapshotPath = await this.backend.writeSnapshot(
+      this.records as Map<string, unknown>,
+      this.version,
+    );
+    const opsPath = await this.backend.createOpsFile();
+
+    const updatedManifest: Manifest = {
       version: this.version,
       currentSnapshot: snapshotPath,
       activeOps: opsPath,
@@ -372,9 +534,48 @@ export class Store<T = Record<string, unknown>> {
         lastCheckpoint: new Date().toISOString(),
       },
     };
-    await writeManifest(this.dir, updatedManifest);
+    await this.backend.writeManifest(updatedManifest);
     this.activeOpsPath = opsPath;
     this.ops = [];
+  }
+
+  private async _compactMultiWriter(): Promise<void> {
+    let compactLock: LockHandle;
+    try {
+      compactLock = await this.backend.acquireCompactionLock();
+    } catch {
+      // Another agent is compacting — skip
+      return;
+    }
+
+    try {
+      const snapshotPath = await this.backend.writeSnapshot(
+        this.records as Map<string, unknown>,
+        this.version,
+      );
+      const opsPath = await this.backend.createAgentOpsFile(this.agentId!);
+
+      const updatedManifest: Manifest = {
+        version: this.version,
+        currentSnapshot: snapshotPath,
+        activeOps: opsPath,
+        activeAgentOps: { [this.agentId!]: opsPath },
+        archiveSegments: this.archiveSegments,
+        stats: {
+          activeRecords: this.records.size,
+          archivedRecords: this.archivedRecordCount,
+          opsCount: 0,
+          created: this.created,
+          lastCheckpoint: new Date().toISOString(),
+        },
+      };
+      await this.backend.writeManifest(updatedManifest);
+      this.activeOpsPath = opsPath;
+      this.ops = [];
+      this.manifestVersion = await this.backend.getManifestVersion();
+    } finally {
+      await this.backend.releaseCompactionLock(compactLock);
+    }
   }
 
   private async _archive(
@@ -388,7 +589,10 @@ export class Store<T = Record<string, unknown>> {
     if (toArchive.size === 0) return 0;
 
     const period = segment ?? this.defaultPeriod();
-    const segmentPath = await writeArchiveSegment(this.dir, period, toArchive);
+    const segmentPath = await this.backend.writeArchiveSegment(
+      period,
+      toArchive as Map<string, unknown>,
+    );
     if (!this.archiveSegments.includes(segmentPath)) {
       this.archiveSegments.push(segmentPath);
     }
@@ -402,6 +606,71 @@ export class Store<T = Record<string, unknown>> {
     return toArchive.size;
   }
 
+  private async _refresh(): Promise<void> {
+    const manifest = await this.backend.readManifest();
+    if (!manifest) throw new Error("Manifest not found during refresh");
+
+    const { records, version } = await this.backend.loadSnapshot(
+      manifest.currentSnapshot,
+    );
+    this.records = records as Map<string, T>;
+    this.version = version;
+    this.archiveSegments = manifest.archiveSegments;
+    this.archivedRecordCount = manifest.stats.archivedRecords;
+    this.created = manifest.stats.created;
+
+    // Read all agent ops
+    const allOps: Operation<T>[] = [];
+    if (manifest.activeAgentOps) {
+      for (const opsPath of Object.values(manifest.activeAgentOps)) {
+        const ops = await this.backend.readOps(opsPath);
+        allOps.push(...(ops as Operation<T>[]));
+      }
+    }
+    // Legacy single-writer ops
+    if (manifest.activeOps && !manifest.activeAgentOps) {
+      const ops = await this.backend.readOps(manifest.activeOps);
+      allOps.push(...(ops as Operation<T>[]));
+    }
+
+    // Merge-sort
+    allOps.sort((a, b) => {
+      const clockDiff = (a.clock ?? 0) - (b.clock ?? 0);
+      if (clockDiff !== 0) return clockDiff;
+      return (a.agent ?? "").localeCompare(b.agent ?? "");
+    });
+
+    for (const op of allOps) this.applyOp(op);
+    this.ops = allOps;
+
+    // Update clock
+    const maxClock = allOps.reduce(
+      (max, op) => Math.max(max, op.clock ?? 0),
+      0,
+    );
+    this.clock = new LamportClock(maxClock);
+
+    // Update our ops path if manifest changed
+    if (manifest.activeAgentOps?.[this.agentId!]) {
+      this.activeOpsPath = manifest.activeAgentOps[this.agentId!];
+    } else {
+      // Our ops file is not in the manifest (compaction happened)
+      this.activeOpsPath = await this.backend.createAgentOpsFile(
+        this.agentId!,
+      );
+      const updatedManifest: Manifest = {
+        ...manifest,
+        activeAgentOps: {
+          ...(manifest.activeAgentOps ?? {}),
+          [this.agentId!]: this.activeOpsPath,
+        },
+      };
+      await this.backend.writeManifest(updatedManifest);
+    }
+
+    this.manifestVersion = await this.backend.getManifestVersion();
+  }
+
   // --- Helpers ---
 
   private ensureOpen(): void {
@@ -409,7 +678,8 @@ export class Store<T = Record<string, unknown>> {
   }
 
   private ensureWritable(): void {
-    if (this.options.readOnly) throw new Error("Store is read-only. Cannot perform mutations.");
+    if (this.coreOpts.readOnly)
+      throw new Error("Store is read-only. Cannot perform mutations.");
   }
 
   private applyOp(op: Operation<T>): void {
@@ -422,21 +692,18 @@ export class Store<T = Record<string, unknown>> {
 
   private reverseOp(op: Operation<T>): void {
     if (op.prev === null) {
-      // Was a create — reverse by deleting
       this.records.delete(op.id);
     } else if (op.op === "delete") {
-      // Was a delete — reverse by restoring
       this.records.set(op.id, op.prev);
     } else {
-      // Was an update — reverse by restoring prev
       this.records.set(op.id, op.prev);
     }
   }
 
   private async persistOp(op: Operation<T>): Promise<void> {
-    await appendOp(join(this.dir, this.activeOpsPath), op);
+    await this.backend.appendOps(this.activeOpsPath, [op as Operation]);
     this.ops.push(op);
-    if (this.ops.length >= this.options.checkpointThreshold) {
+    if (this.ops.length >= this.coreOpts.checkpointThreshold) {
       await this._compact();
     }
   }

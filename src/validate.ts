@@ -20,6 +20,14 @@ export function validateOp<T>(raw: unknown): Operation<T> {
   if ("encoding" in obj && obj.encoding !== "full" && obj.encoding !== "delta") {
     throw new Error(`Invalid operation: encoding must be "full" or "delta", got "${obj.encoding}"`);
   }
+  if ("agent" in obj && (typeof obj.agent !== "string" || obj.agent.length === 0)) {
+    throw new Error("Invalid operation: agent must be a non-empty string");
+  }
+  if ("clock" in obj) {
+    if (typeof obj.clock !== "number" || !Number.isFinite(obj.clock) || !Number.isInteger(obj.clock) || obj.clock < 0) {
+      throw new Error("Invalid operation: clock must be a non-negative integer");
+    }
+  }
   return raw as Operation<T>;
 }
 
@@ -46,6 +54,16 @@ export function validateManifest(raw: unknown): Manifest {
   if (typeof stats.opsCount !== "number" || !Number.isFinite(stats.opsCount) || !Number.isInteger(stats.opsCount) || stats.opsCount < 0) throw new Error("Invalid manifest: stats.opsCount must be a non-negative integer");
   if (typeof stats.created !== "string" || stats.created.length === 0) throw new Error("Invalid manifest: stats.created must be a non-empty string");
   if (typeof stats.lastCheckpoint !== "string" || stats.lastCheckpoint.length === 0) throw new Error("Invalid manifest: stats.lastCheckpoint must be a non-empty string");
+  if ("activeAgentOps" in obj && obj.activeAgentOps !== undefined) {
+    if (typeof obj.activeAgentOps !== "object" || obj.activeAgentOps === null || Array.isArray(obj.activeAgentOps)) {
+      throw new Error("Invalid manifest: activeAgentOps must be an object");
+    }
+    for (const [, val] of Object.entries(obj.activeAgentOps as Record<string, unknown>)) {
+      if (typeof val !== "string" || val.length === 0) {
+        throw new Error("Invalid manifest: activeAgentOps values must be non-empty strings");
+      }
+    }
+  }
   return raw as Manifest;
 }
 
