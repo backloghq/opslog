@@ -382,16 +382,18 @@ export class Store<T = Record<string, unknown>> {
   }
 
   /**
-   * Reload state from the backend (multi-writer mode).
-   * Re-reads the manifest, snapshot, and all agent WAL files.
-   * Use this to pick up writes from other agents.
+   * Reload state from the backend.
+   * In multi-writer mode: re-reads manifest, snapshot, and all agent WAL files.
+   * In single-writer/readOnly mode: re-reads the active ops file for new entries.
+   * Use this to pick up writes from other agents or processes.
    */
   async refresh(): Promise<void> {
     this.ensureOpen();
-    if (!this.isMultiWriter()) {
-      throw new Error("refresh() is only available in multi-writer mode");
+    if (this.isMultiWriter()) {
+      return this.serialize(() => this._refresh());
     }
-    return this.serialize(() => this._refresh());
+    // Single-writer / readOnly: just tail the active ops file
+    await this.tail();
   }
 
   // --- WAL tailing ---
@@ -400,16 +402,26 @@ export class Store<T = Record<string, unknown>> {
   private watchCallback: ((ops: Operation<T>[]) => void) | null = null;
 
   /**
-   * Tail the WAL for new operations. Re-reads the active ops file
-   * and replays any new operations since the last known count.
+   * Tail the WAL for new operations.
+   * In single-writer/readOnly: re-reads the active ops file for new entries.
+   * In multi-writer: re-reads ALL agent WAL files from the manifest.
    * Returns the newly applied operations.
-   * Works in any mode (single-writer readOnly, multi-writer, etc).
    */
   async tail(): Promise<Operation<T>[]> {
     this.ensureOpen();
     const prevCount = this.ops.length;
 
-    // Re-read the ops file for new entries
+    if (this.isMultiWriter()) {
+      // Multi-writer: full refresh to pick up all agents' writes
+      await this.serialize(() => this._refresh());
+      // Return the difference
+      if (this.ops.length > prevCount) {
+        return this.ops.slice(prevCount);
+      }
+      return [];
+    }
+
+    // Single-writer / readOnly: just re-read our ops file
     const allOps = (await this.backend.readOps(this.activeOpsPath)) as Operation<T>[];
     if (allOps.length <= prevCount) return [];
 

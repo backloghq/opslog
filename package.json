@@ -1,6 +1,6 @@
 {
   "name": "@backloghq/opslog",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Embedded event-sourced document store. Append-only operation log with immutable snapshots, zero native dependencies.",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
