@@ -1,6 +1,6 @@
-import { mkdir, open, readdir, stat, unlink, writeFile } from "node:fs/promises";
+import { mkdir, open, readdir, readFile, rm, stat, unlink, writeFile } from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { LockHandle, Manifest, Operation, StorageBackend } from "./types.js";
 import { appendOp, appendOps, readOps, truncateLastOp } from "./wal.js";
 import { loadSnapshot, writeSnapshot } from "./snapshot.js";
@@ -171,5 +171,35 @@ export class FsBackend implements StorageBackend {
     } catch {
       return null;
     }
+  }
+
+  // -- Blob storage --
+
+  async writeBlob(relativePath: string, content: Buffer): Promise<void> {
+    const fullPath = join(this.dir, relativePath);
+    await mkdir(dirname(fullPath), { recursive: true });
+    await writeFile(fullPath, content);
+  }
+
+  async readBlob(relativePath: string): Promise<Buffer> {
+    return readFile(join(this.dir, relativePath));
+  }
+
+  async listBlobs(prefix: string): Promise<string[]> {
+    try {
+      return await readdir(join(this.dir, prefix));
+    } catch {
+      return [];
+    }
+  }
+
+  async deleteBlob(relativePath: string): Promise<void> {
+    try {
+      await unlink(join(this.dir, relativePath));
+    } catch { /* ignore if not found */ }
+  }
+
+  async deleteBlobDir(prefix: string): Promise<void> {
+    await rm(join(this.dir, prefix), { recursive: true, force: true });
   }
 }

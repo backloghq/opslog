@@ -117,4 +117,16 @@ export interface StorageBackend {
   acquireCompactionLock(): Promise<LockHandle>;
   releaseCompactionLock(handle: LockHandle): Promise<void>;
   getManifestVersion(): Promise<string | null>;
+
+  // -- Blob storage (files outside the WAL) --
+  /** Write a blob at a relative path. Creates directories as needed. */
+  writeBlob(relativePath: string, content: Buffer): Promise<void>;
+  /** Read a blob from a relative path. */
+  readBlob(relativePath: string): Promise<Buffer>;
+  /** List blob names under a prefix directory. */
+  listBlobs(prefix: string): Promise<string[]>;
+  /** Delete a single blob. */
+  deleteBlob(relativePath: string): Promise<void>;
+  /** Delete all blobs under a prefix directory. */
+  deleteBlobDir(prefix: string): Promise<void>;
 }

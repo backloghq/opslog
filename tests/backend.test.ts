@@ -230,4 +230,47 @@ describe("FsBackend", () => {
       await backend.releaseCompactionLock(handle);
     });
   });
+
+  describe("blob storage", () => {
+    it("write and read a blob", async () => {
+      const content = Buffer.from("Hello blob!");
+      await backend.writeBlob("blobs/doc1/spec.md", content);
+      const result = await backend.readBlob("blobs/doc1/spec.md");
+      expect(result.toString("utf-8")).toBe("Hello blob!");
+    });
+
+    it("write and read binary blob", async () => {
+      const binary = Buffer.from([0x89, 0x50, 0x4e, 0x47]);
+      await backend.writeBlob("blobs/doc1/image.png", binary);
+      const result = await backend.readBlob("blobs/doc1/image.png");
+      expect(Buffer.compare(result, binary)).toBe(0);
+    });
+
+    it("listBlobs returns blob names", async () => {
+      await backend.writeBlob("blobs/doc1/a.txt", Buffer.from("a"));
+      await backend.writeBlob("blobs/doc1/b.txt", Buffer.from("b"));
+      const blobs = await backend.listBlobs("blobs/doc1");
+      expect(blobs).toContain("a.txt");
+      expect(blobs).toContain("b.txt");
+    });
+
+    it("listBlobs returns empty for missing directory", async () => {
+      const blobs = await backend.listBlobs("blobs/nonexistent");
+      expect(blobs).toEqual([]);
+    });
+
+    it("deleteBlob removes the file", async () => {
+      await backend.writeBlob("blobs/doc1/temp.txt", Buffer.from("temp"));
+      await backend.deleteBlob("blobs/doc1/temp.txt");
+      await expect(backend.readBlob("blobs/doc1/temp.txt")).rejects.toThrow();
+    });
+
+    it("deleteBlobDir removes entire directory", async () => {
+      await backend.writeBlob("blobs/doc1/a.txt", Buffer.from("a"));
+      await backend.writeBlob("blobs/doc1/b.txt", Buffer.from("b"));
+      await backend.deleteBlobDir("blobs/doc1");
+      const blobs = await backend.listBlobs("blobs/doc1");
+      expect(blobs).toEqual([]);
+    });
+  });
 });
