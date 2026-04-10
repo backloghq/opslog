@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.6.0 (2026-04-10)
+
+### Added
+- **Blob storage** — `StorageBackend` interface extended with 5 new methods: `writeBlob`, `readBlob`, `listBlobs`, `deleteBlob`, `deleteBlobDir`. For storing files outside the WAL (images, PDFs, code, etc.).
+- **FsBackend blob implementation** — stores blobs as files at relative paths under the data directory.
+
+### Breaking
+- `StorageBackend` interface has 5 new required methods. Custom backends must implement them.
+
 ## 0.5.1 (2026-04-09)
 
 ### Added

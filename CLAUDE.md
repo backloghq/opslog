@@ -34,6 +34,10 @@ All I/O goes through the `StorageBackend` interface. `FsBackend` (filesystem) is
 
 `writeMode: "group"` buffers ops in memory and flushes as a single disk write (~12x faster). `writeMode: "async"` goes further — `set()`/`delete()` resolve immediately on buffer, background flush handles persistence (~50x faster, data lost on crash). Configurable via `groupCommitSize` (default 50) and `groupCommitMs` (default 100). Forced to `"immediate"` when `agentId` is set (multi-writer safety). `store.flush()` / `store.sync()` for explicit flush. Buffer flushed on `close()` and `compact()`.
 
+### Blob Storage
+
+`StorageBackend` supports blob storage for files outside the WAL: `writeBlob(path, content)`, `readBlob(path)`, `listBlobs(prefix)`, `deleteBlob(path)`, `deleteBlobDir(prefix)`. Paths are relative to the store directory. FsBackend stores as files, S3Backend stores as S3 objects.
+
 ### Multi-Writer Concurrency
 
 When `StoreOptions.agentId` is set, the store operates in multi-writer mode:
