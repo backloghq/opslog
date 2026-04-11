@@ -185,6 +185,17 @@ export class FsBackend implements StorageBackend {
     return readFile(join(this.dir, relativePath));
   }
 
+  async readBlobRange(relativePath: string, offset: number, length: number): Promise<Buffer> {
+    const fd = await open(join(this.dir, relativePath), "r");
+    try {
+      const buf = Buffer.alloc(length);
+      await fd.read(buf, 0, length, offset);
+      return buf;
+    } finally {
+      await fd.close();
+    }
+  }
+
   async listBlobs(prefix: string): Promise<string[]> {
     try {
       return await readdir(join(this.dir, prefix));

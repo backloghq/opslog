@@ -133,6 +133,8 @@ export interface StorageBackend {
   writeBlob(relativePath: string, content: Buffer): Promise<void>;
   /** Read a blob from a relative path. */
   readBlob(relativePath: string): Promise<Buffer>;
+  /** Read a byte range from a blob. For O(1) point lookups in record stores. */
+  readBlobRange(relativePath: string, offset: number, length: number): Promise<Buffer>;
   /** List blob names under a prefix directory. */
   listBlobs(prefix: string): Promise<string[]>;
   /** Delete a single blob. */

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.8.0 (2026-04-11)
+
+### Added
+- **`readBlobRange(path, offset, length)`** — byte-range read on StorageBackend. FsBackend uses `fs.read` with file offset for true O(1) seek. Enables JSONL record stores with per-record point lookups without reading the full file.
+
+### Breaking
+- `StorageBackend` interface has 1 new required method. Custom backends must implement `readBlobRange`.
+
 ## 0.7.1 (2026-04-11)
 
 ### Fixed
