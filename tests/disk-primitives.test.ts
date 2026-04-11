@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Store } from "../src/store.js";
@@ -328,6 +328,83 @@ describe("Disk-backed primitives", () => {
       // archive needs to scan records Map — should fail or return 0
       const archived = await store2.archive(() => true);
       expect(archived).toBe(0); // no records in Map to archive
+
+      await store2.close();
+    });
+  });
+
+  describe("JSONL snapshot format", () => {
+    it("writes JSONL and reads back correctly", async () => {
+      const store1 = new Store<TestRecord>();
+      await store1.open(tmpDir);
+      await store1.set("a", { name: "Alice", status: "active" });
+      await store1.set("b", { name: "Bob", status: "done" });
+      await store1.close();
+
+      // Verify the snapshot file is JSONL
+      const manifest = JSON.parse(await readFile(join(tmpDir, "manifest.json"), "utf-8"));
+      const snapshotPath = join(tmpDir, manifest.currentSnapshot);
+      expect(manifest.currentSnapshot).toMatch(/\.jsonl$/);
+
+      const content = await readFile(snapshotPath, "utf-8");
+      const lines = content.trim().split("\n");
+      expect(lines.length).toBe(3); // header + 2 records
+
+      // Header has version + timestamp, no "records" key
+      const header = JSON.parse(lines[0]);
+      expect(header.version).toBe(1);
+      expect(header.timestamp).toBeTruthy();
+      expect("records" in header).toBe(false);
+
+      // Each record line has id + data
+      const rec1 = JSON.parse(lines[1]);
+      expect(rec1.id).toBeTruthy();
+      expect(rec1.data).toBeTruthy();
+
+      // Reopen and verify data integrity
+      const store2 = new Store<TestRecord>();
+      await store2.open(tmpDir);
+      expect(store2.get("a")?.name).toBe("Alice");
+      expect(store2.get("b")?.name).toBe("Bob");
+      await store2.close();
+    });
+
+    it("reads legacy JSON snapshots (backward compat)", async () => {
+      // Create a store to get the directory structure
+      const store1 = new Store<TestRecord>();
+      await store1.open(tmpDir, { checkpointOnClose: false });
+      await store1.close();
+
+      // Write a legacy JSON snapshot manually
+      const legacySnapshot = {
+        version: 1,
+        timestamp: new Date().toISOString(),
+        records: {
+          x: { name: "Xavier", status: "active" },
+          y: { name: "Yara", status: "done" },
+        },
+      };
+      const snapshotFile = `snapshots/snap-legacy.json`;
+      await writeFile(join(tmpDir, snapshotFile), JSON.stringify(legacySnapshot), "utf-8");
+
+      // Update manifest to point to legacy snapshot
+      const manifest = JSON.parse(await readFile(join(tmpDir, "manifest.json"), "utf-8"));
+      manifest.currentSnapshot = snapshotFile;
+      await writeFile(join(tmpDir, "manifest.json"), JSON.stringify(manifest), "utf-8");
+
+      // Reopen — should read legacy format
+      const store2 = new Store<TestRecord>();
+      await store2.open(tmpDir);
+      expect(store2.get("x")?.name).toBe("Xavier");
+      expect(store2.get("y")?.name).toBe("Yara");
+      expect(store2.count()).toBe(2);
+
+      // streamSnapshot should also work with legacy format
+      const records: [string, TestRecord][] = [];
+      for await (const entry of store2.streamSnapshot()) {
+        records.push(entry);
+      }
+      expect(records).toHaveLength(2);
 
       await store2.close();
     });
