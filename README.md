@@ -140,6 +140,18 @@ store.stats()                     // { activeRecords, opsCount, archiveSegments 
 await store.refresh()             // Reload from all agent WALs (multi-writer only)
 ```
 
+### Blob Storage (via StorageBackend)
+
+```typescript
+await backend.writeBlob("data/file.jsonl", buffer);  // Write at relative path
+const buf = await backend.readBlob("data/file.jsonl"); // Read full file
+const range = await backend.readBlobRange("data/file.jsonl", 1024, 256); // Byte-range read
+const names = await backend.listBlobs("data");         // List files under prefix
+await backend.deleteBlob("data/file.jsonl");            // Delete file
+```
+
+`readBlobRange` enables O(1) point lookups in JSONL record stores — seek to byte offset, read exact length. FsBackend uses `fs.read` with file offset. S3Backend uses HTTP Range header.
+
 ## Options
 
 ```typescript

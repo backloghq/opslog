@@ -124,6 +124,16 @@ interface Store<T> {
   streamSnapshot(): AsyncGenerator<[string, T]>;
   getWalOps(sinceTimestamp?: string): AsyncGenerator<Operation<T>>;
 }
+
+// StorageBackend blob methods (v0.6+, readBlobRange v0.8+)
+interface StorageBackend {
+  writeBlob(path: string, content: Buffer): Promise<void>;
+  readBlob(path: string): Promise<Buffer>;
+  readBlobRange(path: string, offset: number, length: number): Promise<Buffer>;  // v0.8+
+  listBlobs(prefix: string): Promise<string[]>;
+  deleteBlob(path: string): Promise<void>;
+  deleteBlobDir(prefix: string): Promise<void>;
+}
 ```
 
 ## Coding Conventions

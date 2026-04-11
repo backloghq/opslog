@@ -273,4 +273,87 @@ describe("FsBackend", () => {
       expect(blobs).toEqual([]);
     });
   });
+
+  describe("readBlobRange", () => {
+    it("reads bytes at start of file", async () => {
+      await backend.writeBlob("range-test.txt", Buffer.from("Hello, World!"));
+      const buf = await backend.readBlobRange("range-test.txt", 0, 5);
+      expect(buf.toString("utf-8")).toBe("Hello");
+    });
+
+    it("reads bytes at middle of file", async () => {
+      await backend.writeBlob("range-test.txt", Buffer.from("Hello, World!"));
+      const buf = await backend.readBlobRange("range-test.txt", 7, 5);
+      expect(buf.toString("utf-8")).toBe("World");
+    });
+
+    it("reads bytes at end of file", async () => {
+      await backend.writeBlob("range-test.txt", Buffer.from("Hello, World!"));
+      const buf = await backend.readBlobRange("range-test.txt", 12, 1);
+      expect(buf.toString("utf-8")).toBe("!");
+    });
+
+    it("reads exact length requested", async () => {
+      const data = "Line1\nLine2\nLine3\n";
+      await backend.writeBlob("lines.jsonl", Buffer.from(data));
+      // Read "Line2" (offset=6, length=5)
+      const buf = await backend.readBlobRange("lines.jsonl", 6, 5);
+      expect(buf.toString("utf-8")).toBe("Line2");
+    });
+
+    it("returns only bytes actually read when length exceeds file", async () => {
+      await backend.writeBlob("short.txt", Buffer.from("Hi"));
+      const buf = await backend.readBlobRange("short.txt", 0, 100);
+      expect(buf.length).toBe(2);
+      expect(buf.toString("utf-8")).toBe("Hi");
+    });
+
+    it("returns empty buffer for zero length", async () => {
+      await backend.writeBlob("data.txt", Buffer.from("content"));
+      const buf = await backend.readBlobRange("data.txt", 0, 0);
+      expect(buf.length).toBe(0);
+    });
+
+    it("returns empty buffer when offset is at EOF", async () => {
+      await backend.writeBlob("eof.txt", Buffer.from("abc"));
+      const buf = await backend.readBlobRange("eof.txt", 3, 10);
+      expect(buf.length).toBe(0);
+    });
+
+    it("throws on negative offset or length", async () => {
+      await backend.writeBlob("neg.txt", Buffer.from("data"));
+      await expect(backend.readBlobRange("neg.txt", -1, 5)).rejects.toThrow("non-negative");
+      await expect(backend.readBlobRange("neg.txt", 0, -1)).rejects.toThrow("non-negative");
+    });
+
+    it("works with JSONL record store pattern", async () => {
+      const records = [
+        JSON.stringify({ _id: "a", title: "First" }),
+        JSON.stringify({ _id: "b", title: "Second" }),
+        JSON.stringify({ _id: "c", title: "Third" }),
+      ];
+      const content = records.join("\n") + "\n";
+      await backend.writeBlob("records.jsonl", Buffer.from(content));
+
+      // Build offset index
+      let offset = 0;
+      const offsets: Array<{ offset: number; length: number }> = [];
+      for (const line of records) {
+        const len = Buffer.byteLength(line, "utf-8");
+        offsets.push({ offset, length: len });
+        offset += len + 1; // +1 for newline
+      }
+
+      // Read second record by offset
+      const buf = await backend.readBlobRange("records.jsonl", offsets[1].offset, offsets[1].length);
+      const record = JSON.parse(buf.toString("utf-8"));
+      expect(record._id).toBe("b");
+      expect(record.title).toBe("Second");
+
+      // Read third record
+      const buf3 = await backend.readBlobRange("records.jsonl", offsets[2].offset, offsets[2].length);
+      const record3 = JSON.parse(buf3.toString("utf-8"));
+      expect(record3._id).toBe("c");
+    });
+  });
 });
