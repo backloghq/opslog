@@ -1,5 +1,5 @@
-import { createReadStream } from "node:fs";
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { createReadStream, createWriteStream } from "node:fs";
+import { readFile, rename } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { join } from "node:path";
 import { validateSnapshot } from "./validate.js";
@@ -26,14 +26,17 @@ export async function writeSnapshot<T>(
   const filename = `snap-${Date.now()}.jsonl`;
   const path = join(dir, "snapshots", filename);
 
-  const lines: string[] = [];
-  lines.push(JSON.stringify({ version, timestamp }));
-  for (const [id, data] of records) {
-    lines.push(JSON.stringify({ id, data }));
-  }
-
+  // Stream line-by-line to avoid V8 string limit at large record counts
   const tmpPath = path + ".tmp";
-  await writeFile(tmpPath, lines.join("\n") + "\n", "utf-8");
+  await new Promise<void>((resolve, reject) => {
+    const ws = createWriteStream(tmpPath, "utf-8");
+    ws.on("error", reject);
+    ws.write(JSON.stringify({ version, timestamp }) + "\n");
+    for (const [id, data] of records) {
+      ws.write(JSON.stringify({ id, data }) + "\n");
+    }
+    ws.end(() => resolve());
+  });
   await rename(tmpPath, path);
   return `snapshots/${filename}`;
 }

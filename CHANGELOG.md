@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.1 (2026-04-11)
+
+### Fixed
+- **Streaming snapshot write** — `writeSnapshot()` now writes line-by-line via `createWriteStream` instead of accumulating all lines into a single string with `lines.join()`. Fixes V8 string limit crash at ~1M records (~500MB string). Read path was already streaming (v0.7.0); write path now matches.
+
 ## 0.7.0 (2026-04-11)
 
 ### Added

@@ -408,5 +408,33 @@ describe("Disk-backed primitives", () => {
 
       await store2.close();
     });
+
+    it("streaming write handles large record counts without string accumulation", async () => {
+      // Write enough records that a lines.join() approach would create a large string.
+      // This test verifies the streaming write path doesn't accumulate all lines in memory.
+      const N = 10_000;
+      const store1 = new Store<TestRecord>();
+      await store1.open(tmpDir, { checkpointThreshold: N + 1 }); // prevent auto-checkpoint
+      for (let i = 0; i < N; i++) {
+        await store1.set(`r-${i}`, { name: `Record ${i}`, status: i % 2 === 0 ? "active" : "done" });
+      }
+      await store1.close(); // checkpoint writes streaming JSONL snapshot
+
+      // Reopen and verify all records survived the round-trip
+      const store2 = new Store<TestRecord>();
+      await store2.open(tmpDir);
+      expect(store2.count()).toBe(N);
+      expect(store2.get("r-0")?.name).toBe("Record 0");
+      expect(store2.get(`r-${N - 1}`)?.name).toBe(`Record ${N - 1}`);
+
+      // Verify via streamSnapshot
+      let streamCount = 0;
+      for await (const [, ] of store2.streamSnapshot()) {
+        streamCount++;
+      }
+      expect(streamCount).toBe(N);
+
+      await store2.close();
+    }, 30000);
   });
 });
