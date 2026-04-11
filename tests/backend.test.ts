@@ -93,7 +93,7 @@ describe("FsBackend", () => {
         ["b", { x: 2 }],
       ]);
       const path = await backend.writeSnapshot(records, 1);
-      expect(path).toMatch(/^snapshots\/snap-\d+\.json$/);
+      expect(path).toMatch(/^snapshots\/snap-\d+\.jsonl$/);
 
       const loaded = await backend.loadSnapshot(path);
       expect(loaded.version).toBe(1);

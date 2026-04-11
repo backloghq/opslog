@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.7.0 (2026-04-11)
+
+### Added
+- **`skipLoad` option** — `store.open(dir, { skipLoad: true })` opens the store (acquires lock, reads manifest) without loading the snapshot or replaying WAL into memory. For consumers that manage their own read path (e.g. Parquet-backed storage). Writes still work normally.
+- **`store.getManifest()`** — public accessor for the current manifest. Returns snapshot/WAL file paths, archive segments, and stats. Returns `null` before open.
+- **`store.streamSnapshot()`** — async generator that yields `[id, record]` pairs from the current snapshot without loading all records into memory at once. For streaming compaction to external formats.
+- **`store.getWalOps(sinceTimestamp?)`** — async generator that yields WAL operations, optionally filtered to those after a given timestamp. Multi-writer ops are merge-sorted by Lamport clock. For incremental replay without full snapshot reload.
+- **`ManifestInfo` type** — read-only manifest facade returned by `getManifest()`. Exposes `currentSnapshot`, `activeOps`, `archiveSegments`, `stats` without internal fields like `activeAgentOps`.
+
+### Changed
+- **JSONL snapshot format** — snapshots now written as JSONL (header line + one line per record) instead of monolithic JSON. Enables true streaming reads via `readline`. Old JSON snapshots are auto-detected and read correctly (backward compatible reads).
+- **`store.streamSnapshot()` true streaming** — uses `readline` to yield records one at a time from JSONL snapshots. Only one record in memory at a time. Falls back to parse-then-yield for legacy JSON snapshots.
+- **`getManifest()` returns `ManifestInfo`** — read-only type instead of raw `Manifest`. Prevents consumers from depending on internal manifest structure.
+- **`getWalOps()` single-writer optimization** — yields directly from ops array without intermediate accumulation buffer.
+- **`compact()` guarded in skipLoad mode** — throws instead of writing empty snapshot that would destroy data.
+
+### Breaking
+- **Snapshot file extension changed** from `.json` to `.jsonl`. Existing `.json` snapshots are still readable (auto-detected). New snapshots are always `.jsonl`. Custom StorageBackend implementations that pattern-match on snapshot file extensions may need updating.
+
 ## 0.6.0 (2026-04-10)
 
 ### Added

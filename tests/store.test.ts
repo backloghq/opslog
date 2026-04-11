@@ -476,10 +476,10 @@ describe("Store", () => {
       await store.set("a", { name: "A", status: "active" });
       await store.close();
 
+      // Write a corrupt legacy JSON snapshot (missing timestamp)
       const manifest = JSON.parse(await readFile(join(tmpDir, "manifest.json"), "utf-8"));
       const snapshotPath = join(tmpDir, manifest.currentSnapshot);
-      const snapshot = JSON.parse(await readFile(snapshotPath, "utf-8"));
-      delete snapshot.timestamp;
+      const snapshot = { version: 1, records: { a: { name: "A", status: "active" } } };
       await writeFile(snapshotPath, JSON.stringify(snapshot), "utf-8");
 
       const store2 = new Store<TestRecord>();
@@ -491,10 +491,10 @@ describe("Store", () => {
       await store.set("a", { name: "A", status: "active" });
       await store.close();
 
+      // Write a corrupt legacy JSON snapshot (invalid version)
       const manifest = JSON.parse(await readFile(join(tmpDir, "manifest.json"), "utf-8"));
       const snapshotPath = join(tmpDir, manifest.currentSnapshot);
-      const snapshot = JSON.parse(await readFile(snapshotPath, "utf-8"));
-      snapshot.version = 0;
+      const snapshot = { version: 0, timestamp: "2026-01-01", records: { a: { name: "A", status: "active" } } };
       await writeFile(snapshotPath, JSON.stringify(snapshot), "utf-8");
 
       const store2 = new Store<TestRecord>();
