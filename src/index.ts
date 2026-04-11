@@ -3,6 +3,7 @@ export { FsBackend } from "./backend.js";
 export { LamportClock } from "./clock.js";
 export { createDelta, applyDelta, isDeltaSmaller } from "./delta.js";
 export type { DeltaPatch } from "./delta.js";
+export { streamSnapshotFile } from "./snapshot.js";
 export { acquireLock, releaseLock } from "./lock.js";
 export {
   validateOp,

@@ -12,7 +12,7 @@ A lightweight storage engine that records every mutation as an operation in an a
 <data-dir>/
   manifest.json                       # Points to current snapshot + active ops file(s)
   snapshots/
-    snap-<timestamp>.json             # Immutable full-state captures
+    snap-<timestamp>.jsonl            # Immutable full-state captures (JSONL: header + one record per line)
   ops/
     ops-<timestamp>.jsonl             # Single-writer operation log (one JSON per line)
     agent-<id>-<timestamp>.jsonl      # Per-agent operation log (multi-writer mode)

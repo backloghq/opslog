@@ -56,7 +56,7 @@ State survives restarts — reopen the same directory and everything is there.
 data/
   manifest.json                    # Points to current snapshot + ops file(s)
   snapshots/
-    snap-<timestamp>.json          # Immutable full-state capture
+    snap-<timestamp>.jsonl          # Immutable full-state capture (JSONL: header + one line per record)
   ops/
     ops-<timestamp>.jsonl          # Append-only operation log (single-writer)
     agent-<id>-<timestamp>.jsonl   # Per-agent operation log (multi-writer)

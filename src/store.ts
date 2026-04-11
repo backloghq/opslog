@@ -11,6 +11,7 @@ import { createDefaultManifest } from "./manifest.js";
 import { FsBackend } from "./backend.js";
 import { LamportClock } from "./clock.js";
 import { createDelta, applyDelta, isDeltaSmaller } from "./delta.js";
+import { streamSnapshotFile } from "./snapshot.js";
 import type { DeltaPatch } from "./delta.js";
 
 /** Core option keys that have defaults. */
@@ -387,13 +388,9 @@ export class Store<T = Record<string, unknown>> {
     this.ensureOpen();
     const manifest = this.manifest;
     if (!manifest) return;
-    // Note: snapshot is monolithic JSON — must be fully parsed before yielding.
-    // Consumer benefits from not accumulating all records (GC can reclaim yielded entries).
-    // True streaming would require a JSONL snapshot format (future optimization).
-    const snapshotData = await this.backend.loadSnapshot(manifest.currentSnapshot);
-    for (const [id, record] of snapshotData.records) {
-      yield [id, record as T];
-    }
+    // True streaming via readline — one record in memory at a time (JSONL format).
+    // Falls back to parse-then-yield for legacy JSON snapshots.
+    yield* streamSnapshotFile<T>(this.dir, manifest.currentSnapshot);
   }
 
   /**
