@@ -93,7 +93,7 @@ store.all()                       // All records
 store.entries()                   // All [id, record] pairs
 store.filter(predicate)           // Records matching predicate
 store.count(predicate?)           // Count (all or matching)
-store.getManifest()               // Current manifest (snapshot/WAL paths, stats)
+store.getManifest()               // Read-only ManifestInfo (snapshot/WAL paths, stats)
 ```
 
 ### Streaming (for external consumers)

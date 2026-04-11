@@ -120,7 +120,7 @@ interface Store<T> {
   refresh(): Promise<void>;  // Reload from all agent WALs (multi-writer only)
 
   // Disk-backed primitives (v0.7+)
-  getManifest(): Manifest | null;
+  getManifest(): ManifestInfo | null;
   streamSnapshot(): AsyncGenerator<[string, T]>;
   getWalOps(sinceTimestamp?: string): AsyncGenerator<Operation<T>>;
 }
