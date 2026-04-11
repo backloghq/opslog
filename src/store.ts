@@ -457,6 +457,9 @@ export class Store<T = Record<string, unknown>> {
   async compact(): Promise<void> {
     this.ensureOpen();
     this.ensureWritable();
+    if (this.coreOpts.skipLoad) {
+      throw new Error("Cannot compact in skipLoad mode — in-memory Map is incomplete");
+    }
     return this.serialize(() => this._compact());
   }
 

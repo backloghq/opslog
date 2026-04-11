@@ -74,6 +74,18 @@ describe("Disk-backed primitives", () => {
 
       await store1.close();
     });
+
+    it("rejects compact() in skipLoad mode", async () => {
+      const store1 = new Store<TestRecord>();
+      await store1.open(tmpDir);
+      await store1.set("a", { name: "Alice", status: "active" });
+      await store1.close();
+
+      const store2 = new Store<TestRecord>();
+      await store2.open(tmpDir, { skipLoad: true });
+      await expect(store2.compact()).rejects.toThrow("skipLoad");
+      await store2.close();
+    });
   });
 
   describe("getManifest", () => {
