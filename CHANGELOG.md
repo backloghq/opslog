@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.8.1 (2026-04-11)
+
+### Fixed
+- **Pretty-printed legacy JSON snapshots** — `loadSnapshot()` and `streamSnapshotFile()` now handle multi-line legacy JSON where the first line is just `{`. Falls back to full-content parse when first-line parse fails.
+
 ## 0.8.0 (2026-04-11)
 
 ### Added

@@ -51,17 +51,27 @@ export async function loadSnapshot<T>(
   // Detect format: JSONL (first line is header without "records" key) vs legacy JSON
   const firstNewline = content.indexOf("\n");
   const firstLine = firstNewline === -1 ? content : content.slice(0, firstNewline);
-  const parsed = JSON.parse(firstLine);
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(firstLine);
+  } catch {
+    // First line isn't valid JSON (e.g., pretty-printed legacy JSON starts with "{")
+    // Fall back to parsing the full content as legacy JSON
+    const snapshot = validateSnapshot<T>(JSON.parse(content));
+    const records = new Map(Object.entries(snapshot.records));
+    return { records, version: snapshot.version };
+  }
 
   if ("records" in parsed) {
-    // Legacy monolithic JSON format
+    // Legacy monolithic JSON format (single-line)
     const snapshot = validateSnapshot<T>(parsed);
     const records = new Map(Object.entries(snapshot.records));
     return { records, version: snapshot.version };
   }
 
   // JSONL format: first line is header, remaining lines are records
-  const header = parsed as SnapshotHeader;
+  const header = parsed as unknown as SnapshotHeader;
   const records = new Map<string, T>();
   const lines = content.split("\n");
   for (let i = 1; i < lines.length; i++) {
@@ -88,7 +98,14 @@ export async function* streamSnapshotFile<T>(
   const content = await readFile(path, "utf-8");
   const firstNewline = content.indexOf("\n");
   const firstLine = firstNewline === -1 ? content : content.slice(0, firstNewline);
-  const parsed = JSON.parse(firstLine);
+
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = JSON.parse(firstLine);
+  } catch {
+    // Pretty-printed legacy JSON — first line isn't valid JSON
+    parsed = JSON.parse(content);
+  }
 
   if ("records" in parsed) {
     // Legacy JSON: must load all, then yield
@@ -100,7 +117,7 @@ export async function* streamSnapshotFile<T>(
   }
 
   // JSONL: stream line by line via readline
-  const header = parsed as SnapshotHeader;
+  const header = parsed as unknown as SnapshotHeader;
   const rl = createInterface({
     input: createReadStream(path, "utf-8"),
     crlfDelay: Infinity,

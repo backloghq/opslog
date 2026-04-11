@@ -409,6 +409,35 @@ describe("Disk-backed primitives", () => {
       await store2.close();
     });
 
+    it("reads pretty-printed legacy JSON snapshots (multi-line)", async () => {
+      const store1 = new Store<TestRecord>();
+      await store1.open(tmpDir, { checkpointOnClose: false });
+      await store1.close();
+
+      // Write a pretty-printed legacy JSON snapshot (first line is just "{")
+      const legacySnapshot = {
+        version: 1,
+        timestamp: new Date().toISOString(),
+        records: {
+          p: { name: "Pretty", status: "active" },
+          q: { name: "Printed", status: "done" },
+        },
+      };
+      const snapshotFile = `snapshots/snap-pretty.json`;
+      await writeFile(join(tmpDir, snapshotFile), JSON.stringify(legacySnapshot, null, 2), "utf-8");
+
+      const manifest = JSON.parse(await readFile(join(tmpDir, "manifest.json"), "utf-8"));
+      manifest.currentSnapshot = snapshotFile;
+      await writeFile(join(tmpDir, "manifest.json"), JSON.stringify(manifest), "utf-8");
+
+      const store2 = new Store<TestRecord>();
+      await store2.open(tmpDir);
+      expect(store2.get("p")?.name).toBe("Pretty");
+      expect(store2.get("q")?.name).toBe("Printed");
+      expect(store2.count()).toBe(2);
+      await store2.close();
+    });
+
     it("streaming write handles large record counts without string accumulation", async () => {
       // Write enough records that a lines.join() approach would create a large string.
       // This test verifies the streaming write path doesn't accumulate all lines in memory.
