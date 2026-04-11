@@ -14,6 +14,7 @@ export type {
   Operation,
   Snapshot,
   Manifest,
+  ManifestInfo,
   ManifestStats,
   ArchiveSegment,
   StoreOptions,

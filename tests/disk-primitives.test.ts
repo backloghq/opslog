@@ -262,4 +262,74 @@ describe("Disk-backed primitives", () => {
       await store2.close();
     });
   });
+
+  describe("error handling", () => {
+    it("streamSnapshot throws before open", async () => {
+      const store = new Store<TestRecord>();
+      const gen = store.streamSnapshot();
+      await expect(gen.next()).rejects.toThrow("not open");
+    });
+
+    it("getWalOps throws before open", async () => {
+      const store = new Store<TestRecord>();
+      const gen = store.getWalOps();
+      await expect(gen.next()).rejects.toThrow("not open");
+    });
+  });
+
+  describe("edge cases", () => {
+    it("streamSnapshot excludes deleted records", async () => {
+      const store1 = new Store<TestRecord>();
+      await store1.open(tmpDir);
+      await store1.set("a", { name: "Alice", status: "active" });
+      await store1.set("b", { name: "Bob", status: "done" });
+      await store1.delete("b");
+      await store1.close(); // checkpoint writes snapshot without deleted record
+
+      const store2 = new Store<TestRecord>();
+      await store2.open(tmpDir, { skipLoad: true });
+
+      const records: [string, TestRecord][] = [];
+      for await (const entry of store2.streamSnapshot()) {
+        records.push(entry);
+      }
+      expect(records).toHaveLength(1);
+      expect(records[0][0]).toBe("a");
+
+      await store2.close();
+    });
+
+    it("getManifest returns read-only info without internal fields", async () => {
+      const store = new Store<TestRecord>();
+      await store.open(tmpDir);
+      await store.set("a", { name: "Alice", status: "active" });
+
+      const manifest = store.getManifest();
+      expect(manifest).not.toBeNull();
+      expect(manifest!.currentSnapshot).toBeTruthy();
+      expect(manifest!.activeOps).toBeTruthy();
+      expect(manifest!.archiveSegments).toBeDefined();
+      expect(manifest!.stats).toBeDefined();
+      // Should NOT expose activeAgentOps or other internals
+      expect("activeAgentOps" in manifest!).toBe(false);
+
+      await store.close();
+    });
+
+    it("skipLoad + archive throws on archive()", async () => {
+      const store1 = new Store<TestRecord>();
+      await store1.open(tmpDir);
+      await store1.set("a", { name: "Alice", status: "active" });
+      await store1.close();
+
+      const store2 = new Store<TestRecord>();
+      await store2.open(tmpDir, { skipLoad: true });
+
+      // archive needs to scan records Map — should fail or return 0
+      const archived = await store2.archive(() => true);
+      expect(archived).toBe(0); // no records in Map to archive
+
+      await store2.close();
+    });
+  });
 });

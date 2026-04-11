@@ -48,6 +48,14 @@ export interface ArchiveSegment<T = Record<string, unknown>> {
   records: Record<string, T>;
 }
 
+/** Read-only manifest info exposed to consumers via store.getManifest(). */
+export interface ManifestInfo {
+  readonly currentSnapshot: string;
+  readonly activeOps: string;
+  readonly archiveSegments: readonly string[];
+  readonly stats: Readonly<ManifestStats>;
+}
+
 export interface StoreOptions {
   /** Auto-checkpoint after this many operations (default: 100) */
   checkpointThreshold?: number;

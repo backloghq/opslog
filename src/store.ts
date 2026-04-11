@@ -1,6 +1,7 @@
 import type {
   LockHandle,
   Manifest,
+  ManifestInfo,
   Operation,
   StorageBackend,
   StoreOptions,
@@ -365,9 +366,16 @@ export class Store<T = Record<string, unknown>> {
     return results;
   }
 
-  /** Get the current manifest. Returns null if store is not open or no manifest exists. */
-  getManifest(): Manifest | null {
-    return this.manifest ?? null;
+  /** Get read-only manifest info. Returns null if store is not open or no manifest exists. */
+  getManifest(): ManifestInfo | null {
+    const m = this.manifest;
+    if (!m) return null;
+    return {
+      currentSnapshot: m.currentSnapshot,
+      activeOps: m.activeOps,
+      archiveSegments: m.archiveSegments,
+      stats: m.stats,
+    };
   }
 
   /**
@@ -379,6 +387,9 @@ export class Store<T = Record<string, unknown>> {
     this.ensureOpen();
     const manifest = this.manifest;
     if (!manifest) return;
+    // Note: snapshot is monolithic JSON — must be fully parsed before yielding.
+    // Consumer benefits from not accumulating all records (GC can reclaim yielded entries).
+    // True streaming would require a JSONL snapshot format (future optimization).
     const snapshotData = await this.backend.loadSnapshot(manifest.currentSnapshot);
     for (const [id, record] of snapshotData.records) {
       yield [id, record as T];
@@ -395,29 +406,29 @@ export class Store<T = Record<string, unknown>> {
     const manifest = this.manifest;
     if (!manifest) return;
 
-    const allOps: Operation<T>[] = [];
-
     if (manifest.activeAgentOps) {
-      // Multi-writer: read all agent ops files
+      // Multi-writer: must load all ops for merge-sort by (clock, agent)
+      const allOps: Operation<T>[] = [];
       for (const opsPath of Object.values(manifest.activeAgentOps)) {
         const ops = (await this.backend.readOps(opsPath)) as Operation<T>[];
         allOps.push(...ops);
       }
-      // Merge-sort by (clock, agent) for deterministic order
       allOps.sort((a, b) => {
         const clockDiff = (a.clock ?? 0) - (b.clock ?? 0);
         if (clockDiff !== 0) return clockDiff;
         return (a.agent ?? "").localeCompare(b.agent ?? "");
       });
+      for (const op of allOps) {
+        if (sinceTimestamp && op.ts <= sinceTimestamp) continue;
+        yield op;
+      }
     } else {
-      // Single-writer: read active ops file
+      // Single-writer: yield directly from ops array (no extra accumulation)
       const ops = (await this.backend.readOps(manifest.activeOps)) as Operation<T>[];
-      allOps.push(...ops);
-    }
-
-    for (const op of allOps) {
-      if (sinceTimestamp && op.ts <= sinceTimestamp) continue;
-      yield op;
+      for (const op of ops) {
+        if (sinceTimestamp && op.ts <= sinceTimestamp) continue;
+        yield op;
+      }
     }
   }
 

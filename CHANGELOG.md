@@ -7,6 +7,12 @@
 - **`store.getManifest()`** — public accessor for the current manifest. Returns snapshot/WAL file paths, archive segments, and stats. Returns `null` before open.
 - **`store.streamSnapshot()`** — async generator that yields `[id, record]` pairs from the current snapshot without loading all records into memory at once. For streaming compaction to external formats.
 - **`store.getWalOps(sinceTimestamp?)`** — async generator that yields WAL operations, optionally filtered to those after a given timestamp. Multi-writer ops are merge-sorted by Lamport clock. For incremental replay without full snapshot reload.
+- **`ManifestInfo` type** — read-only manifest facade returned by `getManifest()`. Exposes `currentSnapshot`, `activeOps`, `archiveSegments`, `stats` without internal fields like `activeAgentOps`.
+
+### Changed
+- **`getManifest()` returns `ManifestInfo`** — read-only type instead of raw `Manifest`. Prevents consumers from depending on internal manifest structure.
+- **`getWalOps()` single-writer optimization** — yields directly from ops array without intermediate accumulation buffer.
+- **`compact()` guarded in skipLoad mode** — throws instead of writing empty snapshot that would destroy data.
 
 ## 0.6.0 (2026-04-10)
 
