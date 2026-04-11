@@ -59,6 +59,8 @@ export interface StoreOptions {
   migrate?: (record: unknown, fromVersion: number) => unknown;
   /** Open in read-only mode: skips directory lock, rejects all mutations. */
   readOnly?: boolean;
+  /** Skip loading snapshot and replaying WAL into memory. Store opens for writes only — reads return empty. For consumers that manage their own read path (e.g. Parquet-backed storage). */
+  skipLoad?: boolean;
   /** Storage backend implementation (default: FsBackend). */
   backend?: StorageBackend;
   /** Agent ID for multi-writer mode. Enables per-agent WAL streams and LWW conflict resolution. */

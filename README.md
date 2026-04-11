@@ -93,6 +93,21 @@ store.all()                       // All records
 store.entries()                   // All [id, record] pairs
 store.filter(predicate)           // Records matching predicate
 store.count(predicate?)           // Count (all or matching)
+store.getManifest()               // Current manifest (snapshot/WAL paths, stats)
+```
+
+### Streaming (for external consumers)
+
+```typescript
+// Stream snapshot records without loading all into memory
+for await (const [id, record] of store.streamSnapshot()) {
+  process(id, record);
+}
+
+// Read WAL operations (optionally since a timestamp)
+for await (const op of store.getWalOps(sinceTimestamp?)) {
+  // op: { ts, op: "set"|"delete", id, data?, prev }
+}
 ```
 
 ### Batch
@@ -134,6 +149,7 @@ await store.open(dir, {
   version: 1,                     // Schema version
   migrate: (record, fromVersion) => record, // Migration function
   readOnly: false,                // Open in read-only mode (default: false)
+  skipLoad: false,                // Skip loading snapshot/WAL into memory (default: false)
   writeMode: "immediate",         // "immediate" (default), "group" (~12x faster), or "async" (~50x faster, lossy on crash)
   groupCommitSize: 50,            // Group: flush after N ops (default: 50)
   groupCommitMs: 100,             // Group: flush after N ms (default: 100)

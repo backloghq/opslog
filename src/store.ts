@@ -19,6 +19,7 @@ interface CoreOptions {
   version: number;
   migrate: (record: unknown, fromVersion: number) => unknown;
   readOnly: boolean;
+  skipLoad: boolean;
 }
 
 export class Store<T = Record<string, unknown>> {
@@ -36,6 +37,7 @@ export class Store<T = Record<string, unknown>> {
     version: 1,
     migrate: (r) => r as T,
     readOnly: false,
+    skipLoad: false,
   };
   private archivedRecordCount = 0;
   private batching = false;
@@ -56,6 +58,7 @@ export class Store<T = Record<string, unknown>> {
   private groupMs = 100;
   private groupTimer: ReturnType<typeof setTimeout> | null = null;
   private manifestVersion: string | null = null;
+  private manifest: Manifest | null = null;
 
   /**
    * Serialize all state-mutating operations through a promise chain.
@@ -77,7 +80,12 @@ export class Store<T = Record<string, unknown>> {
   async open(dir: string, options?: StoreOptions): Promise<void> {
     this.dir = dir;
     if (options) {
-      const { backend, agentId, writeMode, groupCommitSize, groupCommitMs, ...rest } = options;
+      const { backend, agentId, writeMode, groupCommitSize, groupCommitMs, skipLoad, ...rest } = options;
+      if (skipLoad) {
+        this.coreOpts.skipLoad = true;
+        // Never checkpoint when skipLoad — Map is empty, would overwrite real data
+        this.coreOpts.checkpointOnClose = false;
+      }
       this.coreOpts = { ...this.coreOpts, ...rest };
       if (backend) this.backend = backend;
       if (agentId) this.agentId = agentId;
@@ -139,6 +147,7 @@ export class Store<T = Record<string, unknown>> {
     }
     await this.backend.writeManifest(newManifest);
 
+    this.manifest = newManifest;
     this.version = this.coreOpts.version;
     this.activeOpsPath = opsPath;
     this.created = newManifest.stats.created;
@@ -150,6 +159,34 @@ export class Store<T = Record<string, unknown>> {
   }
 
   private async loadExistingStore(manifest: Manifest): Promise<void> {
+    this.created = manifest.stats.created;
+    this.archiveSegments = manifest.archiveSegments;
+    this.archivedRecordCount = manifest.stats.archivedRecords;
+    this.manifest = manifest;
+
+    // skipLoad: acquire ops path for writes but don't load records or replay WAL
+    if (this.coreOpts.skipLoad) {
+      this.version = this.coreOpts.version;
+      if (this.isMultiWriter()) {
+        const maxClock = 0;
+        this.clock = new LamportClock(maxClock);
+        if (manifest.activeAgentOps?.[this.agentId!]) {
+          this.activeOpsPath = manifest.activeAgentOps[this.agentId!];
+        } else {
+          this.activeOpsPath = await this.backend.createAgentOpsFile(this.agentId!);
+          const updatedManifest: Manifest = {
+            ...manifest,
+            activeAgentOps: { ...(manifest.activeAgentOps ?? {}), [this.agentId!]: this.activeOpsPath },
+          };
+          await this.backend.writeManifest(updatedManifest);
+          this.manifest = updatedManifest;
+        }
+      } else {
+        this.activeOpsPath = manifest.activeOps;
+      }
+      return;
+    }
+
     // Load snapshot
     let snapshotData: { records: Map<string, unknown>; version: number };
     try {
@@ -173,9 +210,6 @@ export class Store<T = Record<string, unknown>> {
     const { records, version: storedVersion } = snapshotData;
     this.records = records as Map<string, T>;
     this.version = storedVersion;
-    this.created = manifest.stats.created;
-    this.archiveSegments = manifest.archiveSegments;
-    this.archivedRecordCount = manifest.stats.archivedRecords;
 
     // Migrate if needed
     if (storedVersion < this.coreOpts.version) {
@@ -329,6 +363,62 @@ export class Store<T = Record<string, unknown>> {
       if (predicate(value, id)) results.push(value);
     }
     return results;
+  }
+
+  /** Get the current manifest. Returns null if store is not open or no manifest exists. */
+  getManifest(): Manifest | null {
+    return this.manifest ?? null;
+  }
+
+  /**
+   * Stream snapshot records without loading all into memory.
+   * Yields [id, record] pairs from the current snapshot.
+   * Requires store to be open (manifest must be read).
+   */
+  async *streamSnapshot(): AsyncGenerator<[string, T]> {
+    this.ensureOpen();
+    const manifest = this.manifest;
+    if (!manifest) return;
+    const snapshotData = await this.backend.loadSnapshot(manifest.currentSnapshot);
+    for (const [id, record] of snapshotData.records) {
+      yield [id, record as T];
+    }
+  }
+
+  /**
+   * Read WAL operations, optionally filtered to those after a given timestamp.
+   * Returns ops in chronological order (by Lamport clock for multi-writer).
+   * Does not modify the in-memory Map — consumer handles replay.
+   */
+  async *getWalOps(sinceTimestamp?: string): AsyncGenerator<Operation<T>> {
+    this.ensureOpen();
+    const manifest = this.manifest;
+    if (!manifest) return;
+
+    const allOps: Operation<T>[] = [];
+
+    if (manifest.activeAgentOps) {
+      // Multi-writer: read all agent ops files
+      for (const opsPath of Object.values(manifest.activeAgentOps)) {
+        const ops = (await this.backend.readOps(opsPath)) as Operation<T>[];
+        allOps.push(...ops);
+      }
+      // Merge-sort by (clock, agent) for deterministic order
+      allOps.sort((a, b) => {
+        const clockDiff = (a.clock ?? 0) - (b.clock ?? 0);
+        if (clockDiff !== 0) return clockDiff;
+        return (a.agent ?? "").localeCompare(b.agent ?? "");
+      });
+    } else {
+      // Single-writer: read active ops file
+      const ops = (await this.backend.readOps(manifest.activeOps)) as Operation<T>[];
+      allOps.push(...ops);
+    }
+
+    for (const op of allOps) {
+      if (sinceTimestamp && op.ts <= sinceTimestamp) continue;
+      yield op;
+    }
   }
 
   count(predicate?: (value: T, id: string) => boolean): number {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.7.0 (2026-04-11)
+
+### Added
+- **`skipLoad` option** — `store.open(dir, { skipLoad: true })` opens the store (acquires lock, reads manifest) without loading the snapshot or replaying WAL into memory. For consumers that manage their own read path (e.g. Parquet-backed storage). Writes still work normally.
+- **`store.getManifest()`** — public accessor for the current manifest. Returns snapshot/WAL file paths, archive segments, and stats. Returns `null` before open.
+- **`store.streamSnapshot()`** — async generator that yields `[id, record]` pairs from the current snapshot without loading all records into memory at once. For streaming compaction to external formats.
+- **`store.getWalOps(sinceTimestamp?)`** — async generator that yields WAL operations, optionally filtered to those after a given timestamp. Multi-writer ops are merge-sorted by Lamport clock. For incremental replay without full snapshot reload.
+
 ## 0.6.0 (2026-04-10)
 
 ### Added

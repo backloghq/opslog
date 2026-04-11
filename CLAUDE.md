@@ -79,6 +79,7 @@ tests/
   backend.test.ts     # FsBackend unit tests
   clock.test.ts       # LamportClock tests
   multi-writer.test.ts # Multi-writer: concurrent agents, LWW, undo, compaction, refresh
+  disk-primitives.test.ts # skipLoad, getManifest, streamSnapshot, getWalOps
 ```
 
 ## Public API
@@ -117,6 +118,11 @@ interface Store<T> {
 
   // Multi-writer
   refresh(): Promise<void>;  // Reload from all agent WALs (multi-writer only)
+
+  // Disk-backed primitives (v0.7+)
+  getManifest(): Manifest | null;
+  streamSnapshot(): AsyncGenerator<[string, T]>;
+  getWalOps(sinceTimestamp?: string): AsyncGenerator<Operation<T>>;
 }
 ```
 
