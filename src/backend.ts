@@ -186,11 +186,13 @@ export class FsBackend implements StorageBackend {
   }
 
   async readBlobRange(relativePath: string, offset: number, length: number): Promise<Buffer> {
+    if (offset < 0 || length < 0) throw new Error("readBlobRange: offset and length must be non-negative");
+    if (length === 0) return Buffer.alloc(0);
     const fd = await open(join(this.dir, relativePath), "r");
     try {
       const buf = Buffer.alloc(length);
-      await fd.read(buf, 0, length, offset);
-      return buf;
+      const { bytesRead } = await fd.read(buf, 0, length, offset);
+      return bytesRead < length ? buf.subarray(0, bytesRead) : buf;
     } finally {
       await fd.close();
     }

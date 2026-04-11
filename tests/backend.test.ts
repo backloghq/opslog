@@ -301,6 +301,31 @@ describe("FsBackend", () => {
       expect(buf.toString("utf-8")).toBe("Line2");
     });
 
+    it("returns only bytes actually read when length exceeds file", async () => {
+      await backend.writeBlob("short.txt", Buffer.from("Hi"));
+      const buf = await backend.readBlobRange("short.txt", 0, 100);
+      expect(buf.length).toBe(2);
+      expect(buf.toString("utf-8")).toBe("Hi");
+    });
+
+    it("returns empty buffer for zero length", async () => {
+      await backend.writeBlob("data.txt", Buffer.from("content"));
+      const buf = await backend.readBlobRange("data.txt", 0, 0);
+      expect(buf.length).toBe(0);
+    });
+
+    it("returns empty buffer when offset is at EOF", async () => {
+      await backend.writeBlob("eof.txt", Buffer.from("abc"));
+      const buf = await backend.readBlobRange("eof.txt", 3, 10);
+      expect(buf.length).toBe(0);
+    });
+
+    it("throws on negative offset or length", async () => {
+      await backend.writeBlob("neg.txt", Buffer.from("data"));
+      await expect(backend.readBlobRange("neg.txt", -1, 5)).rejects.toThrow("non-negative");
+      await expect(backend.readBlobRange("neg.txt", 0, -1)).rejects.toThrow("non-negative");
+    });
+
     it("works with JSONL record store pattern", async () => {
       const records = [
         JSON.stringify({ _id: "a", title: "First" }),
